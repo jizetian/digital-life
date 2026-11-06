@@ -1,0 +1,33 @@
+# Chat exports and local databases. Full Moect JSON stays on the machine.
+data/raw/**/*.json
+data/raw/**/*.jsonl
+data/processed/**/*.json
+data/processed/**/*.jsonl
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+storage/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store

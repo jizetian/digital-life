@@ -1,0 +1,7 @@
+# Local-first defaults. Override the database path with CHATTWIN_DB_PATH.
+database:
+  path: data/database/cleaned_messages.db
+
+import:
+  batch_size: 1000
+  raw_dir: data/raw/moect_export
