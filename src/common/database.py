@@ -76,6 +76,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_server
     ON messages(server_id);
 CREATE INDEX IF NOT EXISTS idx_messages_job
     ON messages(job_id);
+CREATE INDEX IF NOT EXISTS idx_messages_seg_order
+    ON messages(COALESCE(conversation_id, ''), source_position, message_id);
 
 CREATE TABLE IF NOT EXISTS import_errors (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,6 +116,91 @@ CREATE TABLE IF NOT EXISTS processing_jobs (
     created_at TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS conversation_segments (
+    segment_id TEXT PRIMARY KEY,
+    conversation_id TEXT,
+    params_hash TEXT NOT NULL,
+    start_time INTEGER,
+    end_time INTEGER,
+    start_message_id TEXT NOT NULL,
+    end_message_id TEXT NOT NULL,
+    message_ids_json TEXT NOT NULL,
+    overlap_message_ids_json TEXT NOT NULL,
+    message_count INTEGER NOT NULL,
+    target_message_count INTEGER NOT NULL,
+    processing_status TEXT NOT NULL,
+    opened_by TEXT NOT NULL,
+    closed_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (processing_status IN ('pending', 'running', 'completed', 'failed', 'retrying', 'skipped')),
+    CHECK (target_message_count >= 1),
+    CHECK (message_count >= target_message_count)
+);
+
+CREATE INDEX IF NOT EXISTS idx_segments_params
+    ON conversation_segments(params_hash, processing_status);
+CREATE INDEX IF NOT EXISTS idx_segments_conversation
+    ON conversation_segments(conversation_id, start_time);
+
+CREATE TABLE IF NOT EXISTS conversation_segment_messages (
+    segment_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    is_overlap INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (segment_id, message_id),
+    FOREIGN KEY (segment_id) REFERENCES conversation_segments(segment_id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(message_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_segment_messages_message
+    ON conversation_segment_messages(message_id);
+
+CREATE TABLE IF NOT EXISTS distillation_tasks (
+    task_id TEXT PRIMARY KEY,
+    segment_id TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    observations_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'retrying', 'skipped')),
+    FOREIGN KEY (segment_id) REFERENCES conversation_segments(segment_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_distill_identity
+    ON distillation_tasks(segment_id, prompt_version, model_version);
+CREATE INDEX IF NOT EXISTS idx_distill_status
+    ON distillation_tasks(status, prompt_version, model_version);
+
+CREATE TABLE IF NOT EXISTS l1_observations (
+    observation_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    segment_id TEXT NOT NULL,
+    category TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    evidence_message_ids_json TEXT NOT NULL,
+    confidence REAL,
+    time_range_start INTEGER,
+    time_range_end INTEGER,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (category IN (
+        'communication', 'emotion', 'opinion', 'value', 'thinking',
+        'decision', 'social', 'interest', 'event', 'fact'
+    )),
+    FOREIGN KEY (task_id) REFERENCES distillation_tasks(task_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_l1_task ON l1_observations(task_id);
+CREATE INDEX IF NOT EXISTS idx_l1_segment ON l1_observations(segment_id);
+CREATE INDEX IF NOT EXISTS idx_l1_category ON l1_observations(category);
 """
 
 

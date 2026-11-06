@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chattwin"
-version = "0.1.0"
-description = "ChatTwin phase 1: local-first Moect WeChat export import"
+version = "0.2.0"
+description = "ChatTwin: local Moect import, conversation segmentation, and L1 distillation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
