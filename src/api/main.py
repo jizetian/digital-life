@@ -1,8 +1,14 @@
-"""Import API. Bind it to localhost; chat exports stay on this machine."""
+"""Local import, segmentation, and L1 distillation API.
+
+Bind it to 127.0.0.1. Chat exports and the SQLite file stay on this machine.
+This service does not run an L2/L3 personality model or a chat agent.
+"""
 
 from __future__ import annotations
 
+import json
 import sys
+import uuid
 from pathlib import Path
 from threading import Lock, Thread
 
@@ -13,9 +19,14 @@ if str(_SRC) not in sys.path:
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from common.clock import utc_now
 from common.config import default_db_path
+from common.database import init_db
 from common.logger import configure_logging, get_logger
+from distillation.engine import run_distillation
+from distillation.status import pipeline_status
 from importer.import_service import begin_import, get_job, run_import
+from segmentation.service import run_segmentation
 
 log = get_logger(__name__)
 _JOB_DB: dict[str, str] = {}
@@ -28,11 +39,34 @@ class ImportRequest(BaseModel):
     resume: bool = False
 
 
+class SegmentRequest(BaseModel):
+    db_path: str | None = None
+    gap_minutes: float | None = None
+    max_messages: int | None = None
+    overlap_messages: int | None = None
+    overlap_on_time_gap: bool | None = None
+    rebuild: bool = False
+
+
+class DistillRequest(BaseModel):
+    db_path: str | None = None
+    batch_size: int | None = None
+    max_tasks: int | None = None
+    retry_failed: bool = False
+    model: str | None = None
+    model_version: str | None = None
+    base_url: str | None = None
+    prompt_version: str | None = None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="ChatTwin Import API",
-        version="0.1.0",
-        description="Local-first Moect export import. No distillation or chat agent.",
+        title="ChatTwin Local API",
+        version="0.2.0",
+        description=(
+            "Local-first Moect import, conversation segmentation, and L1 distillation. "
+            "No long-term memory, vector store, or chat agent."
+        ),
     )
 
     @app.post("/api/v1/import")
@@ -72,7 +106,148 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="import job not found")
         return job
 
+    @app.post("/api/v1/segment")
+    def start_segment(body: SegmentRequest) -> dict:
+        database = _existing_db(body.db_path)
+        return _launch(
+            database,
+            "segmentation",
+            {"rebuild": body.rebuild},
+            lambda: run_segmentation(
+                database,
+                gap_minutes=body.gap_minutes,
+                max_messages=body.max_messages,
+                overlap_messages=body.overlap_messages,
+                overlap_on_time_gap=body.overlap_on_time_gap,
+                rebuild=body.rebuild,
+            ),
+        )
+
+    @app.get("/api/v1/segment/{job_id}")
+    def read_segment(
+        job_id: str,
+        db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
+    ) -> dict:
+        return _read_processing_job(job_id, db)
+
+    @app.post("/api/v1/distill")
+    def start_distill(body: DistillRequest) -> dict:
+        database = _existing_db(body.db_path)
+        return _launch(
+            database,
+            "distillation",
+            {"batch_size": body.batch_size, "retry_failed": body.retry_failed},
+            lambda: run_distillation(
+                database,
+                batch_size=body.batch_size,
+                max_tasks=body.max_tasks,
+                retry_failed=body.retry_failed,
+                model=body.model,
+                model_version=body.model_version,
+                base_url=body.base_url,
+                prompt_version=body.prompt_version,
+            ),
+        )
+
+    @app.get("/api/v1/distill/status")
+    def read_distill_status(
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+    ) -> dict:
+        database = Path(db).expanduser() if db else default_db_path()
+        try:
+            return pipeline_status(database)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"database not found: {exc}") from exc
+
+    @app.get("/api/v1/distill/{job_id}")
+    def read_distill(
+        job_id: str,
+        db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
+    ) -> dict:
+        return _read_processing_job(job_id, db)
+
     return app
+
+
+def _existing_db(db_path: str | None) -> Path:
+    database = Path(db_path).expanduser() if db_path else default_db_path()
+    if not database.is_file():
+        raise HTTPException(status_code=400, detail=f"database not found: {database}")
+    return database.resolve()
+
+
+def _launch(database: Path, job_type: str, payload: dict, worker) -> dict:
+    job_id = uuid.uuid4().hex
+    now = utc_now()
+    conn = init_db(database)
+    try:
+        conn.execute(
+            """
+            INSERT INTO processing_jobs (job_id, job_type, status, payload_json, created_at, updated_at)
+            VALUES (?, ?, 'pending', ?, ?, ?)
+            """,
+            (job_id, job_type, json.dumps(payload), now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    with _LOCK:
+        _JOB_DB[job_id] = str(database)
+
+    def _run() -> None:
+        _set_job(database, job_id, "running", payload)
+        try:
+            result = worker()
+            # A paused distillation still finished this HTTP call; tasks left behind
+            # are resumed by the next POST. ``running`` would look like a live worker.
+            job_status = result.get("status", "completed")
+            if job_status == "running":
+                job_status = "paused"
+            _set_job(database, job_id, job_status, result)
+        except Exception as exc:
+            log.exception("%s job %s failed", job_type, job_id)
+            _set_job(database, job_id, "failed", {"error": f"{type(exc).__name__}: {exc}"})
+
+    Thread(target=_run, name=f"chattwin-{job_type}-{job_id[:8]}", daemon=True).start()
+    return {"job_id": job_id, "status": "pending"}
+
+
+def _set_job(database: Path, job_id: str, status: str, payload: dict) -> None:
+    conn = init_db(database)
+    try:
+        conn.execute(
+            """
+            UPDATE processing_jobs
+            SET status = ?, payload_json = ?, updated_at = ?
+            WHERE job_id = ?
+            """,
+            (status, json.dumps(payload, ensure_ascii=False), utc_now(), job_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _read_processing_job(job_id: str, db: str | None) -> dict:
+    database = _database_for(job_id, db)
+    if not Path(database).is_file():
+        raise HTTPException(status_code=404, detail="database not found")
+    conn = init_db(database)
+    try:
+        row = conn.execute("SELECT * FROM processing_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    payload = json.loads(row["payload_json"]) if row["payload_json"] else None
+    return {
+        "job_id": row["job_id"],
+        "job_type": row["job_type"],
+        "status": row["status"],
+        "payload": payload,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
 
 
 def _database_for(job_id: str, db: str | None) -> str:

@@ -5,3 +5,20 @@ database:
 import:
   batch_size: 1000
   raw_dir: data/raw/moect_export
+
+segmentation:
+  gap_minutes: 30
+  max_messages: 50
+  overlap_messages: 4
+  overlap_on_time_gap: false
+  page_size: 2000
+
+distillation:
+  batch_size: 8
+  base_url: http://127.0.0.1:11434/v1
+  model: qwen2.5:7b
+  model_version: ""
+  timeout_seconds: 120
+  temperature: 0
+  max_attempts: 3
+  max_chars_per_message: 4000
