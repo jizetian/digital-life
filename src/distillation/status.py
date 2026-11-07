@@ -8,6 +8,7 @@ from common.database import init_db
 from common.statuses import PIPELINE_STATUSES
 from memory.status import format_memory_status, memory_snapshot_conn
 from personality.status import format_personality_status, personality_snapshot_conn
+from retrieval.status import format_retrieval_status, retrieval_snapshot_conn
 from segmentation.service import read_checkpoint
 
 
@@ -50,6 +51,7 @@ def pipeline_status(db_path: str | Path) -> dict:
             "segmentation_checkpoint": checkpoint_view,
             "personality": personality_snapshot_conn(conn),
             "memory": memory_snapshot_conn(conn),
+            "retrieval": retrieval_snapshot_conn(conn),
         }
     finally:
         conn.close()
@@ -83,6 +85,9 @@ def format_pipeline_status(status: dict) -> str:
     memory = status.get("memory")
     if memory is not None:
         lines.append(format_memory_status(memory))
+    retrieval = status.get("retrieval")
+    if retrieval is not None:
+        lines.append(format_retrieval_status(retrieval))
     return "\n".join(lines)
 
 
