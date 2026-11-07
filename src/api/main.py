@@ -1,7 +1,7 @@
-"""Local import, segmentation, and L1 distillation API.
+"""Local import, segmentation, L1 distillation, and personality API.
 
 Bind it to 127.0.0.1. Chat exports and the SQLite file stay on this machine.
-This service does not run an L2/L3 personality model or a chat agent.
+This service does not run long-term memory, a vector store, or a chat agent.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from common.logger import configure_logging, get_logger
 from distillation.engine import run_distillation
 from distillation.status import pipeline_status
 from importer.import_service import begin_import, get_job, run_import
+from personality.engine import run_personality
+from personality.status import personality_snapshot
 from segmentation.service import run_segmentation
 
 log = get_logger(__name__)
@@ -59,12 +61,25 @@ class DistillRequest(BaseModel):
     prompt_version: str | None = None
 
 
+class PersonalityRequest(BaseModel):
+    db_path: str | None = None
+    output_dir: str | None = None
+    batch_size: int | None = None
+    max_tasks: int | None = None
+    min_independent: int | None = None
+    retry_failed: bool = False
+    model: str | None = None
+    model_version: str | None = None
+    base_url: str | None = None
+    prompt_version: str | None = None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ChatTwin Local API",
-        version="0.2.0",
+        version="0.3.0",
         description=(
-            "Local-first Moect import, conversation segmentation, and L1 distillation. "
+            "Local-first Moect import, segmentation, L1 distillation, and personality profile. "
             "No long-term memory, vector store, or chat agent."
         ),
     )
@@ -161,6 +176,44 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/distill/{job_id}")
     def read_distill(
+        job_id: str,
+        db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
+    ) -> dict:
+        return _read_processing_job(job_id, db)
+
+    @app.post("/api/v1/personality")
+    def start_personality(body: PersonalityRequest) -> dict:
+        database = _existing_db(body.db_path)
+        return _launch(
+            database,
+            "personality",
+            {"batch_size": body.batch_size, "retry_failed": body.retry_failed},
+            lambda: run_personality(
+                database,
+                output_dir=body.output_dir,
+                batch_size=body.batch_size,
+                max_tasks=body.max_tasks,
+                min_independent=body.min_independent,
+                retry_failed=body.retry_failed,
+                model=body.model,
+                model_version=body.model_version,
+                base_url=body.base_url,
+                prompt_version=body.prompt_version,
+            ),
+        )
+
+    @app.get("/api/v1/personality/status")
+    def read_personality_status(
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+    ) -> dict:
+        database = Path(db).expanduser() if db else default_db_path()
+        try:
+            return personality_snapshot(database)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"database not found: {exc}") from exc
+
+    @app.get("/api/v1/personality/{job_id}")
+    def read_personality(
         job_id: str,
         db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
     ) -> dict:

@@ -1,4 +1,4 @@
-"""SQLite schema for messages, import jobs, and sender mapping."""
+"""SQLite schema for messages, import jobs, segments, L1 observations, and personality."""
 
 from __future__ import annotations
 
@@ -201,6 +201,75 @@ CREATE TABLE IF NOT EXISTS l1_observations (
 CREATE INDEX IF NOT EXISTS idx_l1_task ON l1_observations(task_id);
 CREATE INDEX IF NOT EXISTS idx_l1_segment ON l1_observations(segment_id);
 CREATE INDEX IF NOT EXISTS idx_l1_category ON l1_observations(category);
+
+CREATE TABLE IF NOT EXISTS personality_tasks (
+    task_id TEXT PRIMARY KEY,
+    task_kind TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    batch_key TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    source_ids_json TEXT NOT NULL,
+    result_json TEXT,
+    result_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'retrying', 'skipped')),
+    CHECK (task_kind IN ('merge', 'reduce', 'contradict')),
+    CHECK (active IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_personality_tasks_claim
+    ON personality_tasks(prompt_version, model_version, active, status);
+
+CREATE TABLE IF NOT EXISTS l2_traits (
+    trait_id TEXT PRIMARY KEY,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    situational_scope TEXT NOT NULL,
+    confidence REAL,
+    evidence_count INTEGER NOT NULL,
+    independent_evidence_count INTEGER NOT NULL,
+    counter_evidence_count INTEGER NOT NULL,
+    evidence_ids_json TEXT NOT NULL,
+    counter_evidence_ids_json TEXT NOT NULL,
+    valid_from INTEGER,
+    valid_to INTEGER,
+    status TEXT NOT NULL,
+    stages_json TEXT NOT NULL,
+    variants_json TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (status IN ('stable', 'provisional', 'contested'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_l2_traits_version
+    ON l2_traits(prompt_version, model_version, dimension, status);
+
+CREATE TABLE IF NOT EXISTS personality_checkpoint (
+    checkpoint_id TEXT PRIMARY KEY,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    observation_fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL,
+    output_dir TEXT,
+    profile_written_at TEXT,
+    min_independent INTEGER NOT NULL,
+    traits_stable INTEGER NOT NULL DEFAULT 0,
+    traits_provisional INTEGER NOT NULL DEFAULT 0,
+    traits_contested INTEGER NOT NULL DEFAULT 0,
+    payload_json TEXT,
+    updated_at TEXT NOT NULL
+);
 """
 
 

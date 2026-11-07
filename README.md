@@ -1,10 +1,10 @@
 # ChatTwin / digital-life
 
-Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**的批处理骨架：时间间隔、长度上限、少量重叠，然后用可替换的本地模型客户端抽出带消息编号的观察。
+Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。
 
-这里没有人格 L2/L3、长期记忆、Qdrant、embedding，也没有数字分身聊天 Agent。
+这里没有长期记忆库、Qdrant、embedding，也没有数字分身聊天 Agent。
 
-ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Personality, long-term memory, Qdrant, and a chat agent are later phases and are not in this tree.
+ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Phase 3 merges those observations into a personality profile. Long-term memory, Qdrant, and a chat agent are later phases and are not in this tree.
 
 ## 聊天记录只留在本机
 
@@ -13,6 +13,7 @@ ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1
 - 把导出文件放在本机，例如 `data/raw/moect_export/你的导出.json`。
 - 这个目录里的 `*.json` 已被 `.gitignore` 忽略，**不要**把全量导出提交到 Git，也不要上传到网盘、工单或聊天工具。
 - 生成的 `*.db` 同样被忽略。SQLite 里是清洗后的原文，一样不能提交。
+- `personality/` 根目录下生成的档案（`*.md`、`*.json`）也被忽略。仓库里只保留 `personality/examples/` 的合成模板。
 - 导入 API 只应绑定在 `127.0.0.1`。它不是对外服务。
 
 仓库里唯一的对话样本是开发用的前 300 条：`tests/fixtures/chattwin_moect_sample.json`。它不能代替你的全量文件。
@@ -195,11 +196,66 @@ curl -s http://127.0.0.1:8000/api/v1/distill/status?db=data/database/cleaned_mes
 
 测试用假的模型客户端，`pytest` 不需要本机有 Ollama。
 
+## Phase 3：人格蒸馏
+
+L2 只读已经落库的 L1 观察（摘要、类别、证据消息 id、时间），不再把原文发给模型。L3 把通过检查的特质写成六份维度说明，外加总览和证据 JSON。
+
+六个维度：
+
+| 维度 | L1 类别 | 文件 |
+|---|---|---|
+| 语言与沟通 | `communication` | `communication_style.md` |
+| 情绪 | `emotion` | `emotional_patterns.md` |
+| 思维 | `thinking`、`opinion` | `thinking_patterns.md` |
+| 价值观 | `value` | `values.md` |
+| 社交 | `social` | `social_patterns.md` |
+| 决策 | `decision` | `decision_patterns.md` |
+
+`interest`、`event`、`fact` 只作为上下文计数，不会变成特质。
+
+一条特质要进入档案的「稳定」部分，支持它的观察必须来自至少两个**独立**证据组（默认 2，可用 `--min-independent` 改）。同一段里的观察算一组；证据消息 id 有交集的也算一组（切分重叠会把消息复制到下一段）。不够独立的特质记为 `provisional`，只出现在 `personality_evidence.json`。同一时段里相反的观察记为反证；反证组数不少于独立证据组时，特质是 `contested`，写在档案里单独一节，不当成已确立的人格。时间上错开的相反观察记成阶段变化，而不是反证。`situational_scope` 记下这个特质在什么情境里成立。
+
+每条特质都带 `confidence`、`evidence_count`、`counter_evidence_count`、`valid_from`、`valid_to`、`evidence_ids`。`evidence_ids` 是 L1 的 `observation_id`。证据 JSON 里再展开到 `message_ids`，所以可以回到原消息，但档案本身不复制原文。
+
+模型调用仍是 OpenAI 兼容接口，和 Phase 2 共用 `CHATTWIN_LLM_BASE_URL`、`CHATTWIN_LLM_MODEL`、`CHATTWIN_LLM_API_KEY`。任务主键：
+
+```text
+task_id = sha256(f"{kind}|{dimension}|{batch_key}|{prompt_version}|{model_version}")
+```
+
+`kind` 是 `merge`（一段观察合成候选特质）、`reduce`（跨批次合并；只有一个批次时跳过模型）或 `contradict`（对照反证、阶段和情境）。`prompt_version` 默认 `l2-v1`（`prompts/l2_merge_v1.md`、`prompts/l2_reduce_v1.md`、`prompts/l2_contradict_v1.md`）。`model_version` 默认等于模型名。改提示词时要同时改 `PROMPT_VERSION`，否则旧的 `task_id` 会一直被当成已经完成。
+
+`completed` 和 `skipped` 再次运行不会打模型。进程停在 `running`、或失败后变成 `retrying`，下次同一条命令会接着做。一次运行里每个任务只尝试一次，用尽 `--max-attempts`（默认 3）后是 `failed`。`--retry-failed` 才重新排队。档案文件只在这一版提示词和模型的任务全部完成、且没有失败时写出。
+
+```bash
+python -m scripts.build_personality \
+  --db data/database/cleaned_messages.db \
+  --output personality \
+  --batch-size 20
+```
+
+中断后续跑同一条命令即可。`--max-tasks 4` 处理若干次模型调用后停下。
+
+```bash
+python -m scripts.show_status --db data/database/cleaned_messages.db
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/personality \
+  -H 'content-type: application/json' \
+  -d '{"db_path":"data/database/cleaned_messages.db","output_dir":"personality","batch_size":20}'
+
+curl -s http://127.0.0.1:8000/api/v1/personality/<job_id>
+curl -s http://127.0.0.1:8000/api/v1/personality/status?db=data/database/cleaned_messages.db
+```
+
+生成的 `personality/*.md` 和 `personality/*.json` 不要提交。格式示例在 `personality/examples/`。切分如果 `--rebuild`，会清掉 L1 和人格表；档案文件要再跑一次人格命令才会重写。
+
 ## 路线图
 
 1. Phase 1 — 导入与标准化（已在本仓库）
-2. Phase 2 — 切分与 L1 观察骨架（当前）
-3. 人格蒸馏（L2/L3）
+2. Phase 2 — 切分与 L1 观察（已在本仓库）
+3. Phase 3 — 人格蒸馏 L2/L3（当前）
 4. 长期记忆
 5. 检索（含向量库）
 6. 对话 Agent 与界面
@@ -210,4 +266,4 @@ curl -s http://127.0.0.1:8000/api/v1/distill/status?db=data/database/cleaned_mes
 pytest
 ```
 
-测试使用 `tests/fixtures/chattwin_moect_sample.json` 和合成消息，不读取你的全量导出，也不会连接真实模型。
+测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型。
