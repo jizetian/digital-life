@@ -1,0 +1,77 @@
+{
+  "description": "Synthetic L1 observations for the personality profile test. Not a real chat.",
+  "observations": [
+    {
+      "observation_id": "obs-short-1",
+      "message_id": "m-short-1",
+      "timestamp": 1700000000,
+      "category": "communication",
+      "summary": "回复很短，先给结论",
+      "confidence": 0.9,
+      "content": "RAW_MESSAGE_m-short-1"
+    },
+    {
+      "observation_id": "obs-short-2",
+      "message_id": "m-short-2",
+      "timestamp": 1700003600,
+      "category": "communication",
+      "summary": "回复很短，不铺垫",
+      "confidence": 0.8,
+      "content": "RAW_MESSAGE_m-short-2"
+    },
+    {
+      "observation_id": "obs-avoid",
+      "message_id": "m-avoid",
+      "timestamp": 1700001800,
+      "category": "communication",
+      "summary": "避免直接表态",
+      "confidence": 0.7,
+      "content": "RAW_MESSAGE_m-avoid"
+    },
+    {
+      "observation_id": "obs-long",
+      "message_id": "m-long",
+      "timestamp": 1704000000,
+      "category": "communication",
+      "summary": "后来写得很长，会解释原因",
+      "confidence": 0.85,
+      "content": "RAW_MESSAGE_m-long"
+    },
+    {
+      "observation_id": "obs-once",
+      "message_id": "m-once",
+      "timestamp": 1700005000,
+      "category": "communication",
+      "summary": "只在一段里提过周末",
+      "confidence": 0.4,
+      "content": "RAW_MESSAGE_m-once"
+    },
+    {
+      "observation_id": "obs-value-1",
+      "message_id": "m-value-1",
+      "timestamp": 1700000100,
+      "category": "value",
+      "summary": "守时比场面重要",
+      "confidence": 0.88,
+      "content": "RAW_MESSAGE_m-value-1"
+    },
+    {
+      "observation_id": "obs-value-2",
+      "message_id": "m-value-2",
+      "timestamp": 1700004000,
+      "category": "value",
+      "summary": "约会迟到会不舒服",
+      "confidence": 0.86,
+      "content": "RAW_MESSAGE_m-value-2"
+    },
+    {
+      "observation_id": "obs-fact",
+      "message_id": "m-fact",
+      "timestamp": 1700000200,
+      "category": "fact",
+      "summary": "周六去过公园",
+      "confidence": 0.95,
+      "content": "RAW_MESSAGE_m-fact"
+    }
+  ]
+}

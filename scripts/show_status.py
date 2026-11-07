@@ -1,4 +1,4 @@
-"""Show segmentation and L1 distillation counts.
+"""Show segmentation, L1 distillation, and personality counts.
 
     python -m scripts.show_status --db data/database/cleaned_messages.db
 """
@@ -18,7 +18,9 @@ from distillation.status import format_pipeline_status, pipeline_status  # noqa:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Print local segmentation and L1 distillation status.")
+    parser = argparse.ArgumentParser(
+        description="Print local segmentation, L1 distillation, and personality status."
+    )
     parser.add_argument("--db", required=True, help="SQLite database path")
     return parser
 

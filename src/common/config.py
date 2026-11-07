@@ -31,6 +31,14 @@ _DEFAULTS = {
         "max_attempts": 3,
         "max_chars_per_message": 4000,
     },
+    "personality": {
+        "batch_size": 20,
+        "contradict_batch_size": 30,
+        "max_attempts": 3,
+        "min_independent": 2,
+        "max_chars_per_summary": 500,
+        "output_dir": "personality",
+    },
 }
 
 
@@ -124,4 +132,16 @@ def distillation_config() -> dict:
     _apply_str(cfg, "CHATTWIN_MODEL_VERSION", "model_version")
     _apply_int(cfg, "CHATTWIN_DISTILL_BATCH_SIZE", "batch_size")
     _apply_int(cfg, "CHATTWIN_DISTILL_MAX_ATTEMPTS", "max_attempts")
+    return cfg
+
+
+def personality_config() -> dict:
+    """L2/L3 personality settings. The model endpoint is the distillation client."""
+    cfg = _merged_section("personality")
+    _apply_int(cfg, "CHATTWIN_PERSONALITY_BATCH_SIZE", "batch_size")
+    _apply_int(cfg, "CHATTWIN_PERSONALITY_CONTRADICT_BATCH_SIZE", "contradict_batch_size")
+    _apply_int(cfg, "CHATTWIN_PERSONALITY_MAX_ATTEMPTS", "max_attempts")
+    _apply_int(cfg, "CHATTWIN_PERSONALITY_MIN_INDEPENDENT", "min_independent")
+    _apply_str(cfg, "CHATTWIN_PERSONALITY_OUTPUT_DIR", "output_dir")
+    _apply_str(cfg, "CHATTWIN_L2_PROMPT_VERSION", "prompt_version")
     return cfg

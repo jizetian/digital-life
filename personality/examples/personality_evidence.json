@@ -1,0 +1,98 @@
+{
+  "prompt_version": "l2-v1",
+  "model_version": "example",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "observation_fingerprint": "example",
+  "min_independent_evidence": 2,
+  "dimensions": {
+    "communication": {
+      "title": "Communication style",
+      "file": "communication_style.md",
+      "traits": [
+        {
+          "trait_id": "example",
+          "dimension": "communication",
+          "statement": "先把结论说完",
+          "situational_scope": "日常答复",
+          "status": "stable",
+          "confidence": 0.6588,
+          "evidence_count": 2,
+          "independent_evidence_count": 2,
+          "counter_evidence_count": 0,
+          "valid_from": 1700000000,
+          "valid_to": 1704000000,
+          "evidence_ids": ["obs-example-1", "obs-example-2"],
+          "counter_evidence_ids": [],
+          "stages": [
+            {
+              "statement": "先把结论说完",
+              "observation_ids": ["obs-example-1", "obs-example-2"],
+              "valid_from": 1700000000,
+              "valid_to": 1700003600
+            },
+            {
+              "statement": "后来会把原因补上",
+              "observation_ids": ["obs-example-3"],
+              "valid_from": 1704000000,
+              "valid_to": 1704000000
+            }
+          ],
+          "variants": [],
+          "evidence": [],
+          "counter_evidence": []
+        }
+      ]
+    },
+    "emotion": {"title": "Emotional patterns", "file": "emotional_patterns.md", "traits": []},
+    "thinking": {"title": "Thinking patterns", "file": "thinking_patterns.md", "traits": []},
+    "values": {
+      "title": "Values",
+      "file": "values.md",
+      "traits": [
+        {
+          "trait_id": "example-values",
+          "dimension": "values",
+          "statement": "约定好的时间比场面重要",
+          "situational_scope": "约定时间",
+          "status": "stable",
+          "confidence": 0.7,
+          "evidence_count": 2,
+          "independent_evidence_count": 2,
+          "counter_evidence_count": 0,
+          "valid_from": 1700000100,
+          "valid_to": 1700004000,
+          "evidence_ids": ["obs-example-4", "obs-example-5"],
+          "counter_evidence_ids": [],
+          "stages": [],
+          "variants": [],
+          "evidence": [],
+          "counter_evidence": []
+        }
+      ]
+    },
+    "social": {"title": "Social patterns", "file": "social_patterns.md", "traits": []},
+    "decision": {"title": "Decision patterns", "file": "decision_patterns.md", "traits": []}
+  },
+  "evolution": [
+    {
+      "dimension": "communication",
+      "trait_id": "example",
+      "statement": "先把结论说完",
+      "stages": [
+        {
+          "statement": "先把结论说完",
+          "observation_ids": ["obs-example-1", "obs-example-2"],
+          "valid_from": 1700000000,
+          "valid_to": 1700003600
+        },
+        {
+          "statement": "后来会把原因补上",
+          "observation_ids": ["obs-example-3"],
+          "valid_from": 1704000000,
+          "valid_to": 1704000000
+        }
+      ]
+    }
+  ],
+  "context_observations": {"interest": 0, "event": 0, "fact": 0}
+}

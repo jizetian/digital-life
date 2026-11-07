@@ -263,6 +263,11 @@ def _restore_open(checkpoint: dict):
 def _clear_segmentation(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM conversation_segments")
     conn.execute("DELETE FROM processing_jobs WHERE job_id = ?", (CHECKPOINT_ID,))
+    # L1 rows cascade with the segments. Personality rows cite those observations,
+    # so a rebuild drops them too. Profile files on disk are rewritten by the next personality run.
+    conn.execute("DELETE FROM l2_traits")
+    conn.execute("DELETE FROM personality_tasks")
+    conn.execute("DELETE FROM personality_checkpoint")
     conn.commit()
 
 

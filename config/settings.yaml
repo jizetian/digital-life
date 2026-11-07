@@ -22,3 +22,12 @@ distillation:
   temperature: 0
   max_attempts: 3
   max_chars_per_message: 4000
+
+# L2/L3 personality. The model URL and name come from distillation above.
+personality:
+  batch_size: 20
+  contradict_batch_size: 30
+  max_attempts: 3
+  min_independent: 2
+  max_chars_per_summary: 500
+  output_dir: personality
