@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chattwin"
-version = "0.3.0"
-description = "ChatTwin: local Moect import, segmentation, L1 distillation, and personality profile"
+version = "0.4.0"
+description = "ChatTwin: local import, segmentation, personality, and long-term memory"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

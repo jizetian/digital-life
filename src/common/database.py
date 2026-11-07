@@ -1,4 +1,4 @@
-"""SQLite schema for messages, import jobs, segments, L1 observations, and personality."""
+"""SQLite schema for messages, segments, L1 observations, personality, and long-term memory."""
 
 from __future__ import annotations
 
@@ -270,6 +270,172 @@ CREATE TABLE IF NOT EXISTS personality_checkpoint (
     payload_json TEXT,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS entities (
+    entity_id TEXT PRIMARY KEY,
+    canonical_name TEXT NOT NULL,
+    name_key TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    aliases_json TEXT NOT NULL,
+    description TEXT,
+    confidence REAL,
+    first_seen INTEGER,
+    last_seen INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (entity_type IN ('person', 'place', 'organization', 'object', 'concept', 'other')),
+    CHECK (status IN ('confirmed', 'inferred', 'unknown')),
+    CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_type_key
+    ON entities(entity_type, name_key);
+
+CREATE TABLE IF NOT EXISTS memories (
+    memory_id TEXT PRIMARY KEY,
+    memory_type TEXT NOT NULL,
+    status TEXT NOT NULL,
+    statement TEXT NOT NULL,
+    situation TEXT,
+    importance REAL,
+    confidence REAL,
+    time_start INTEGER,
+    time_end INTEGER,
+    time_precision TEXT NOT NULL DEFAULT 'unknown',
+    evidence_message_ids_json TEXT NOT NULL,
+    source_observation_ids_json TEXT NOT NULL DEFAULT '[]',
+    origin_segment_id TEXT,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    superseded_by TEXT,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (memory_type IN ('fact', 'event', 'relationship', 'opinion', 'situational')),
+    CHECK (status IN ('active', 'historical', 'superseded', 'uncertain')),
+    CHECK (time_precision IN ('instant', 'day', 'range', 'unknown')),
+    CHECK (importance IS NULL OR (importance >= 0 AND importance <= 1)),
+    CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    FOREIGN KEY (origin_segment_id) REFERENCES conversation_segments(segment_id) ON DELETE SET NULL,
+    FOREIGN KEY (superseded_by) REFERENCES memories(memory_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_time
+    ON memories(time_start, status);
+CREATE INDEX IF NOT EXISTS idx_memories_type_status
+    ON memories(memory_type, status);
+CREATE INDEX IF NOT EXISTS idx_memories_version
+    ON memories(prompt_version, model_version, status);
+
+CREATE TABLE IF NOT EXISTS memory_evidence (
+    evidence_id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    message_id TEXT,
+    observation_id TEXT,
+    segment_id TEXT,
+    evidence_role TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    CHECK (evidence_role IN ('support', 'conflict', 'context')),
+    FOREIGN KEY (memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
+    FOREIGN KEY (message_id) REFERENCES messages(message_id),
+    FOREIGN KEY (observation_id) REFERENCES l1_observations(observation_id) ON DELETE CASCADE,
+    FOREIGN KEY (segment_id) REFERENCES conversation_segments(segment_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_evidence_memory
+    ON memory_evidence(memory_id, evidence_role);
+CREATE INDEX IF NOT EXISTS idx_memory_evidence_message
+    ON memory_evidence(message_id);
+
+CREATE TABLE IF NOT EXISTS memory_entities (
+    memory_id TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    PRIMARY KEY (memory_id, entity_id, role),
+    CHECK (role IN ('subject', 'object', 'participant', 'location', 'mentioned')),
+    FOREIGN KEY (memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
+    FOREIGN KEY (entity_id) REFERENCES entities(entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entities_entity
+    ON memory_entities(entity_id);
+
+CREATE TABLE IF NOT EXISTS memory_relations (
+    relation_id TEXT PRIMARY KEY,
+    relation_type TEXT NOT NULL,
+    from_memory_id TEXT NOT NULL,
+    to_memory_id TEXT NOT NULL,
+    confidence REAL,
+    note TEXT,
+    created_at TEXT NOT NULL,
+    CHECK (relation_type IN ('supersedes', 'historical_of', 'conflicts_with', 'supports', 'related_to')),
+    CHECK (from_memory_id != to_memory_id),
+    CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    FOREIGN KEY (from_memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE,
+    FOREIGN KEY (to_memory_id) REFERENCES memories(memory_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_relations_unique
+    ON memory_relations(relation_type, from_memory_id, to_memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_relations_to
+    ON memory_relations(to_memory_id, relation_type);
+
+CREATE TABLE IF NOT EXISTS memory_tasks (
+    task_id TEXT PRIMARY KEY,
+    segment_id TEXT NOT NULL,
+    task_kind TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    input_digest TEXT,
+    result_json TEXT,
+    result_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    started_at TEXT,
+    finished_at TEXT,
+    CHECK (status IN ('pending', 'running', 'completed', 'failed', 'retrying', 'skipped')),
+    CHECK (task_kind IN ('extract', 'merge')),
+    FOREIGN KEY (segment_id) REFERENCES conversation_segments(segment_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_task_identity
+    ON memory_tasks(segment_id, task_kind, prompt_version, model_version);
+CREATE INDEX IF NOT EXISTS idx_memory_tasks_claim
+    ON memory_tasks(prompt_version, model_version, status, task_kind);
+
+CREATE TABLE IF NOT EXISTS memory_checkpoint (
+    checkpoint_id TEXT PRIMARY KEY,
+    prompt_version TEXT NOT NULL,
+    model_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    extracts_completed INTEGER NOT NULL DEFAULT 0,
+    merges_completed INTEGER NOT NULL DEFAULT 0,
+    memories_written INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    statement,
+    content='memories',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, statement) VALUES (new.rowid, new.statement);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
+    INSERT INTO memories_fts(rowid, statement) VALUES (new.rowid, new.statement);
+END;
 """
 
 
