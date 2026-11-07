@@ -76,9 +76,9 @@ def run_segmentation(
 
     A finished checkpoint whose message count still matches is left as-is.
     An unfinished checkpoint for the same parameters resumes after the last
-    committed message. ``--rebuild`` deletes segments (and cascaded
-    distillation rows) and starts over. ``max_segments`` stops early and
-    leaves a running checkpoint.
+    committed message. ``--rebuild`` deletes segments, cascaded distillation
+    rows, personality rows, and long-term memory rows, then starts over.
+    ``max_segments`` stops early and leaves a running checkpoint.
     """
     database = Path(db_path).expanduser().resolve()
     if not database.is_file():
@@ -261,10 +261,19 @@ def _restore_open(checkpoint: dict):
 
 
 def _clear_segmentation(conn: sqlite3.Connection) -> None:
+    # Memory rows cite segments and messages. Drop them before the segments so a
+    # self-reference on memories.superseded_by does not block the delete.
+    # Profile files on disk are rewritten by the next personality run.
+    conn.execute("UPDATE memories SET superseded_by = NULL")
+    conn.execute("DELETE FROM memories")
+    conn.execute("DELETE FROM entities")
+    conn.execute("DELETE FROM memory_tasks")
+    conn.execute("DELETE FROM memory_checkpoint")
+    conn.execute("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')")
     conn.execute("DELETE FROM conversation_segments")
     conn.execute("DELETE FROM processing_jobs WHERE job_id = ?", (CHECKPOINT_ID,))
     # L1 rows cascade with the segments. Personality rows cite those observations,
-    # so a rebuild drops them too. Profile files on disk are rewritten by the next personality run.
+    # so a rebuild drops them too.
     conn.execute("DELETE FROM l2_traits")
     conn.execute("DELETE FROM personality_tasks")
     conn.execute("DELETE FROM personality_checkpoint")

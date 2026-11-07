@@ -1,10 +1,10 @@
 # ChatTwin / digital-life
 
-Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。
+Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。Phase 4 从会话段和 L1 观察里抽出**长期记忆**：事实、事件、关系、看法、情境，连同证据、冲突和时间线。
 
-这里没有长期记忆库、Qdrant、embedding，也没有数字分身聊天 Agent。
+这里没有 Qdrant、embedding、混合检索，也没有数字分身聊天 Agent。SQLite 里的 `memories_fts` 只是语句的词法索引，留给以后的检索用。
 
-ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Phase 3 merges those observations into a personality profile. Long-term memory, Qdrant, and a chat agent are later phases and are not in this tree.
+ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Phase 3 merges those observations into a personality profile. Phase 4 stores long-term memories with evidence and a timeline. Qdrant, embeddings, and a chat agent are later phases and are not in this tree.
 
 ## 聊天记录只留在本机
 
@@ -125,7 +125,7 @@ python -m scripts.segment_conversations \
 
 同一库、同一参数、消息总数没变时，再跑一次不会重写。中断后直接再跑，会从上次提交的消息之后继续，并带上当时还没关闭的那段。
 
-消息条数或切分参数变了，需要显式重建。重建会删掉切分结果，以及级联的蒸馏任务和 L1 观察：
+消息条数或切分参数变了，需要显式重建。重建会删掉切分结果，以及级联的蒸馏任务、L1 观察、人格表和长期记忆：
 
 ```bash
 python -m scripts.segment_conversations \
@@ -249,14 +249,83 @@ curl -s http://127.0.0.1:8000/api/v1/personality/<job_id>
 curl -s http://127.0.0.1:8000/api/v1/personality/status?db=data/database/cleaned_messages.db
 ```
 
-生成的 `personality/*.md` 和 `personality/*.json` 不要提交。格式示例在 `personality/examples/`。切分如果 `--rebuild`，会清掉 L1 和人格表；档案文件要再跑一次人格命令才会重写。
+生成的 `personality/*.md` 和 `personality/*.json` 不要提交。格式示例在 `personality/examples/`。切分如果 `--rebuild`，会清掉 L1、人格表和记忆表；档案文件要再跑一次人格命令才会重写。
+
+## Phase 4：长期记忆
+
+记忆只从已经落库的会话段，以及这段上已有的 L1 观察里来。模型看到的是消息 id、角色、时间和截断后的正文，外加观察的摘要和证据 id。写进记忆表的是一句陈述，不是原文副本。证据必须能回到 `message_id`。对不上该段的 id 会被丢掉；一条候选若最后没有任何有效消息证据，不会入库。没有 L1 也能抽，有 L1 时观察 id 可以带上它自己的消息证据。
+
+五种类型：
+
+| 类型 | 含义 |
+|---|---|
+| `fact` | 个人事实，例如住在哪里、做什么工作 |
+| `event` | 发生过的事 |
+| `relationship` | 人或其他实体之间的关系 |
+| `opinion` | 某人持有的看法 |
+| `situational` | 只在某种情境下成立。`situation` 记下这个情境 |
+
+四种状态。冲突时**不删除旧行**：
+
+| 状态 | 何时使用 |
+|---|---|
+| `active` | 当前仍成立 |
+| `historical` | 过去成立，现在有了后续状态。旧行留下，关系是 `historical_of` |
+| `superseded` | 旧陈述不再被相信，被新行替换。旧行留下，`superseded_by` 指向新行，关系是 `supersedes` |
+| `uncertain` | 两边都声称当前事实，文本分不出对错。两边都留下，关系是 `conflicts_with` |
+
+同一句陈述再次出现时并进原来的行，只追加证据，不新插一行。每条记忆有 `time_start` / `time_end`、`time_precision`、`importance`、`confidence`、`evidence_message_ids`。`memory_evidence` 再把支持证据指到 `message_id` 和 `observation_id`。反证消息记在 `evidence_role = conflict`，不写进 `evidence_message_ids`。
+
+实体在 `entities`。`status` 只允许 `confirmed`（文本写明了）、`inferred`（从上下文推断）、`unknown`（提到了但定不下来）。同一个类型加归一化名字合并成一行。状态只会从 `unknown` 升到 `inferred` 再升到 `confirmed`，不会降回去。`memory_entities` 记下它在这条记忆里的角色：`subject`、`object`、`participant`、`location`、`mentioned`。
+
+模型仍是 OpenAI 兼容接口，和前面阶段共用 `CHATTWIN_LLM_BASE_URL`、`CHATTWIN_LLM_MODEL`、`CHATTWIN_LLM_API_KEY`。每个段两次调用：`extract` 抽候选，`merge` 对照已有记忆。已有记忆以摘要形式送进去，不再重发整段原文。
+
+```text
+task_id = sha256(f"{segment_id}|{kind}|{prompt_version}|{model_version}")
+```
+
+`kind` 是 `extract` 或 `merge`。`prompt_version` 默认 `memory-v1`（`prompts/memory_extract_v1.md`、`prompts/memory_merge_v1.md`）。两份提示词共用这一个版本号；改了其中一份就要一起改 `PROMPT_VERSION`，否则旧的 `task_id` 会一直被当成已经完成。`model_version` 默认等于模型名。
+
+`completed` 和 `skipped` 不会再次打模型。进程停在 `running`、或失败后变成 `retrying`，下次同一条命令会接着做。一次运行里每个任务只尝试一次，用尽 `--max-attempts`（默认 3）后是 `failed`。`--retry-failed` 才重新排队。没有正文、也没有 L1 的段，extract 标成 `skipped`。extract 没有候选时，merge 也标成 `skipped`，不打模型。
+
+```bash
+python -m scripts.build_memories \
+  --db data/database/cleaned_messages.db \
+  --batch-size 4
+```
+
+中断后续跑同一条命令即可。`--max-tasks 4` 处理若干次模型调用后停下，检查点记在 `memory_tasks` 和 `memory_checkpoint`。
+
+时间线把 `historical` 和 `superseded` 也列出来，按 `time_start` 排序，没有时间的放在最后：
+
+```bash
+python -m scripts.show_timeline --db data/database/cleaned_messages.db
+python -m scripts.show_timeline --db data/database/cleaned_messages.db --status active --entity 北京
+python -m scripts.show_status --db data/database/cleaned_messages.db
+```
+
+`memories_fts` 是 FTS5 外部内容表，由触发器跟着 `memories.statement` 更新。它只做词法匹配，不按语义排序，也不是混合检索。
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/memory \
+  -H 'content-type: application/json' \
+  -d '{"db_path":"data/database/cleaned_messages.db","batch_size":4}'
+
+curl -s http://127.0.0.1:8000/api/v1/memory/<job_id>
+curl -s http://127.0.0.1:8000/api/v1/memory/status?db=data/database/cleaned_messages.db
+curl -s "http://127.0.0.1:8000/api/v1/memory/timeline?db=data/database/cleaned_messages.db&status=active"
+```
+
+任务返回值里是计数，不是陈述，也不是原文。时间线接口返回陈述和证据 id，不返回消息正文。切分 `--rebuild` 会清掉这些记忆表。
+
+SQLite 新增：`entities`、`memories`、`memory_evidence`、`memory_entities`、`memory_relations`、`memory_tasks`、`memory_checkpoint`、`memories_fts`。
 
 ## 路线图
 
 1. Phase 1 — 导入与标准化（已在本仓库）
 2. Phase 2 — 切分与 L1 观察（已在本仓库）
-3. Phase 3 — 人格蒸馏 L2/L3（当前）
-4. 长期记忆
+3. Phase 3 — 人格蒸馏 L2/L3（已在本仓库）
+4. Phase 4 — 长期记忆（当前）
 5. 检索（含向量库）
 6. 对话 Agent 与界面
 
@@ -266,4 +335,4 @@ curl -s http://127.0.0.1:8000/api/v1/personality/status?db=data/database/cleaned
 pytest
 ```
 
-测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型。
+测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型。记忆测试用假的模型客户端，从合成段和一条合成 L1 观察写出记忆。

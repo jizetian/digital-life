@@ -23,6 +23,14 @@ distillation:
   max_attempts: 3
   max_chars_per_message: 4000
 
+# Long-term memory. The model URL and name come from distillation above.
+# memories_fts is a lexical hook only. Embeddings and hybrid search are later.
+memory:
+  batch_size: 4
+  max_attempts: 3
+  max_chars_per_message: 2000
+  max_existing: 40
+
 # L2/L3 personality. The model URL and name come from distillation above.
 personality:
   batch_size: 20

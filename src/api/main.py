@@ -1,7 +1,7 @@
-"""Local import, segmentation, L1 distillation, and personality API.
+"""Local import, segmentation, distillation, personality, and memory API.
 
 Bind it to 127.0.0.1. Chat exports and the SQLite file stay on this machine.
-This service does not run long-term memory, a vector store, or a chat agent.
+This service does not run a vector store or a chat agent.
 """
 
 from __future__ import annotations
@@ -26,6 +26,9 @@ from common.logger import configure_logging, get_logger
 from distillation.engine import run_distillation
 from distillation.status import pipeline_status
 from importer.import_service import begin_import, get_job, run_import
+from memory.memory_engine import run_memory
+from memory.status import memory_snapshot
+from memory.timeline_builder import build_timeline
 from personality.engine import run_personality
 from personality.status import personality_snapshot
 from segmentation.service import run_segmentation
@@ -74,13 +77,24 @@ class PersonalityRequest(BaseModel):
     prompt_version: str | None = None
 
 
+class MemoryRequest(BaseModel):
+    db_path: str | None = None
+    batch_size: int | None = None
+    max_tasks: int | None = None
+    retry_failed: bool = False
+    model: str | None = None
+    model_version: str | None = None
+    base_url: str | None = None
+    prompt_version: str | None = None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ChatTwin Local API",
-        version="0.3.0",
+        version="0.4.0",
         description=(
-            "Local-first Moect import, segmentation, L1 distillation, and personality profile. "
-            "No long-term memory, vector store, or chat agent."
+            "Local-first Moect import, segmentation, distillation, personality, and long-term memory. "
+            "No vector store or chat agent."
         ),
     )
 
@@ -214,6 +228,69 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/personality/{job_id}")
     def read_personality(
+        job_id: str,
+        db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
+    ) -> dict:
+        return _read_processing_job(job_id, db)
+
+    @app.post("/api/v1/memory")
+    def start_memory(body: MemoryRequest) -> dict:
+        database = _existing_db(body.db_path)
+        return _launch(
+            database,
+            "memory",
+            {"batch_size": body.batch_size, "retry_failed": body.retry_failed},
+            lambda: run_memory(
+                database,
+                batch_size=body.batch_size,
+                max_tasks=body.max_tasks,
+                retry_failed=body.retry_failed,
+                model=body.model,
+                model_version=body.model_version,
+                base_url=body.base_url,
+                prompt_version=body.prompt_version,
+            ),
+        )
+
+    @app.get("/api/v1/memory/status")
+    def read_memory_status(
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+    ) -> dict:
+        database = Path(db).expanduser() if db else default_db_path()
+        try:
+            return memory_snapshot(database)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"database not found: {exc}") from exc
+
+    @app.get("/api/v1/memory/timeline")
+    def read_memory_timeline(
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+        entity: str | None = None,
+        memory_type: str | None = None,
+        status: str | None = None,
+        limit: int = Query(100, ge=1, le=500),
+    ) -> dict:
+        database = Path(db).expanduser() if db else default_db_path()
+        if not database.is_file():
+            raise HTTPException(status_code=404, detail=f"database not found: {database}")
+        conn = init_db(database)
+        try:
+            try:
+                items = build_timeline(
+                    conn,
+                    entity=entity,
+                    memory_type=memory_type,
+                    status=status,
+                    limit=limit,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            conn.close()
+        return {"count": len(items), "items": items}
+
+    @app.get("/api/v1/memory/{job_id}")
+    def read_memory(
         job_id: str,
         db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
     ) -> dict:

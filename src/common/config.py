@@ -39,6 +39,12 @@ _DEFAULTS = {
         "max_chars_per_summary": 500,
         "output_dir": "personality",
     },
+    "memory": {
+        "batch_size": 4,
+        "max_attempts": 3,
+        "max_chars_per_message": 2000,
+        "max_existing": 40,
+    },
 }
 
 
@@ -132,6 +138,16 @@ def distillation_config() -> dict:
     _apply_str(cfg, "CHATTWIN_MODEL_VERSION", "model_version")
     _apply_int(cfg, "CHATTWIN_DISTILL_BATCH_SIZE", "batch_size")
     _apply_int(cfg, "CHATTWIN_DISTILL_MAX_ATTEMPTS", "max_attempts")
+    return cfg
+
+
+def memory_config() -> dict:
+    """Long-term memory settings. The model endpoint is the shared LLM client."""
+    cfg = _merged_section("memory")
+    _apply_int(cfg, "CHATTWIN_MEMORY_BATCH_SIZE", "batch_size")
+    _apply_int(cfg, "CHATTWIN_MEMORY_MAX_ATTEMPTS", "max_attempts")
+    _apply_int(cfg, "CHATTWIN_MEMORY_MAX_EXISTING", "max_existing")
+    _apply_str(cfg, "CHATTWIN_MEMORY_PROMPT_VERSION", "prompt_version")
     return cfg
 
 
