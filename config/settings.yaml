@@ -24,7 +24,7 @@ distillation:
   max_chars_per_message: 4000
 
 # Long-term memory. The model URL and name come from distillation above.
-# memories_fts is a lexical hook only. Embeddings and hybrid search are later.
+# memories_fts is the memory table's own lexical index. Hybrid search uses retrieval_fts.
 memory:
   batch_size: 4
   max_attempts: 3
@@ -39,3 +39,21 @@ personality:
   min_independent: 2
   max_chars_per_summary: 500
   output_dir: personality
+
+# Hybrid retrieval. BGE-M3 is served by the OpenAI-compatible embeddings endpoint.
+# The chat model above is not the embedding model. Qdrant files stay under data/qdrant.
+retrieval:
+  embedding_provider: openai
+  embedding_model: bge-m3
+  embedding_base_url: ""
+  embedding_dimension: 1024
+  embedding_batch_size: 16
+  embedding_timeout_seconds: 120
+  qdrant_path: data/qdrant
+  qdrant_url: ""
+  vector_backend: qdrant
+  rerank_url: ""
+  rrf_k: 60
+  default_limit: 10
+  candidate_limit: 40
+  max_chars: 8000

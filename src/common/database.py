@@ -1,4 +1,4 @@
-"""SQLite schema for messages, segments, L1 observations, personality, and long-term memory."""
+"""SQLite schema for messages, segments, L1 observations, personality, long-term memory, and retrieval."""
 
 from __future__ import annotations
 
@@ -435,6 +435,66 @@ END;
 CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
     INSERT INTO memories_fts(memories_fts, rowid, statement) VALUES ('delete', old.rowid, old.statement);
     INSERT INTO memories_fts(rowid, statement) VALUES (new.rowid, new.statement);
+END;
+
+-- Rebuildable projection for hybrid search. The source rows stay in
+-- conversation_segments, memories, and l2_traits. Qdrant can be deleted
+-- and rebuilt from retrieval_documents plus retrieval_embeddings.
+CREATE TABLE IF NOT EXISTS retrieval_documents (
+    doc_id TEXT PRIMARY KEY,
+    collection TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    text_hash TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    time_start INTEGER,
+    time_end INTEGER,
+    metadata_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    CHECK (collection IN (
+        'conversation_segments',
+        'long_term_memories',
+        'personality_observations'
+    ))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_retrieval_source
+    ON retrieval_documents(collection, source_id);
+CREATE INDEX IF NOT EXISTS idx_retrieval_collection
+    ON retrieval_documents(collection);
+
+CREATE TABLE IF NOT EXISTS retrieval_embeddings (
+    doc_id TEXT PRIMARY KEY,
+    text_hash TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    dimension INTEGER NOT NULL,
+    point_id TEXT NOT NULL,
+    embedded_at TEXT NOT NULL,
+    FOREIGN KEY (doc_id) REFERENCES retrieval_documents(doc_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_retrieval_embeddings_model
+    ON retrieval_embeddings(model_name, dimension);
+
+-- Trigram tokens match Chinese and English substrings of at least 3 characters.
+CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts USING fts5(
+    text,
+    content='retrieval_documents',
+    content_rowid='rowid',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS retrieval_fts_ai AFTER INSERT ON retrieval_documents BEGIN
+    INSERT INTO retrieval_fts(rowid, text) VALUES (new.rowid, new.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS retrieval_fts_ad AFTER DELETE ON retrieval_documents BEGIN
+    INSERT INTO retrieval_fts(retrieval_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+END;
+
+CREATE TRIGGER IF NOT EXISTS retrieval_fts_au AFTER UPDATE OF text ON retrieval_documents BEGIN
+    INSERT INTO retrieval_fts(retrieval_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
+    INSERT INTO retrieval_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
 """
 

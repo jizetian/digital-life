@@ -12,6 +12,9 @@ data/processed/**/*.jsonl
 *.sqlite-journal
 storage/
 
+# Rebuildable vector index. SQLite remains the source of truth.
+data/qdrant/
+
 # Secrets
 .env
 .env.*
