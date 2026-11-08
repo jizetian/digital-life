@@ -33,3 +33,9 @@ Rules:
 - If nothing is supported, return {"memories":[]}.
 - Do not invent message ids, observation ids, or events the text does not support.
 - Do not wrap the JSON in markdown.
+
+Strict output for tool parsers:
+- Top level MUST be an object: {"memories":[...]} — never a bare JSON array.
+- Field names must be exactly: memory_type, statement, evidence_message_ids, observation_ids (not content/evidence/personal_fact).
+- memory_type must be exactly one of: fact, event, relationship, opinion, situational.
+- Copy evidence_message_ids verbatim from the message_id= values in the input. Do not invent ids.

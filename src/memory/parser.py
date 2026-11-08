@@ -20,6 +20,28 @@ from memory.types import (
 )
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+_TYPE_ALIASES = {
+    "personal_fact": "fact",
+    "factual": "fact",
+    "facts": "fact",
+    "bio": "fact",
+    "biography": "fact",
+    "life_event": "event",
+    "relationship_event": "event",
+    "events": "event",
+    "happening": "event",
+    "interaction": "relationship",
+    "interaction_pattern": "relationship",
+    "relations": "relationship",
+    "relational": "relationship",
+    "opinions": "opinion",
+    "view": "opinion",
+    "views": "opinion",
+    "preference": "opinion",
+    "situation": "situational",
+    "context": "situational",
+    "contextual": "situational",
+}
 _ACTION_ALIASES = {
     "supersedes": "supersede",
     "historical_of": "historical",
@@ -47,11 +69,19 @@ def parse_candidates(
     segment does not contain are removed before that check.
     """
     payload = _load_object(text)
-    if "memories" not in payload and "candidates" not in payload:
-        raise ResponseParseError("JSON object is missing memories")
     items = payload.get("memories")
     if items is None:
         items = payload.get("candidates")
+    if items is None:
+        items = payload.get("items")
+    if items is None:
+        # model sometimes nests under a single arbitrary key
+        for key, value in payload.items():
+            if isinstance(value, list) and key.lower() in {"data", "results", "result", "memory", "output"}:
+                items = value
+                break
+    if items is None and "memories" not in payload and "candidates" not in payload:
+        raise ResponseParseError("JSON object is missing memories")
     if items is None:
         items = []
     if not isinstance(items, list):
@@ -78,11 +108,24 @@ def parse_candidates(
 def parse_merge_actions(text: str) -> list[MergeAction]:
     """Return explicit actions. Missing candidates are filled in by the merger."""
     payload = _load_object(text)
-    if "actions" not in payload:
-        raise ResponseParseError("JSON object is missing actions")
-    items = payload["actions"]
-    if items is None:
-        items = []
+    # Bare list of actions is common for GLM; _load_object wraps lists as memories.
+    if list(payload.keys()) == ["memories"] and isinstance(payload.get("memories"), list):
+        items = payload["memories"]
+    else:
+        items = payload.get("actions")
+        if items is None:
+            items = payload.get("merges")
+        if items is None:
+            items = payload.get("decisions")
+        if items is None:
+            for key, value in payload.items():
+                if isinstance(value, list) and key.lower() in {"data", "results", "result", "output", "items"}:
+                    items = value
+                    break
+        if items is None and "actions" not in payload:
+            raise ResponseParseError("JSON object is missing actions")
+        if items is None:
+            items = []
     if not isinstance(items, list):
         raise ResponseParseError("actions must be a list")
     actions: list[MergeAction] = []
@@ -102,17 +145,34 @@ def _one_candidate(
     if not isinstance(item, dict):
         return None
     memory_type = str(item.get("memory_type", item.get("type", ""))).strip().lower()
+    memory_type = _TYPE_ALIASES.get(memory_type, memory_type)
+    if memory_type not in MEMORY_TYPE_SET:
+        # last-chance: map common suffixes / compounds like "personal_fact"
+        for alias, canonical in _TYPE_ALIASES.items():
+            if alias in memory_type or memory_type.endswith(alias):
+                memory_type = canonical
+                break
     if memory_type not in MEMORY_TYPE_SET:
         return None
-    statement = item.get("statement", item.get("summary"))
+    statement = item.get("statement", item.get("summary", item.get("content", item.get("text", item.get("memory")))))
     if not isinstance(statement, str):
         return None
     statement = " ".join(statement.strip().split())
     if not statement:
         return None
     statement = statement[:MAX_STATEMENT_CHARS]
-    message_ids = filter_ids(item.get("evidence_message_ids", item.get("evidence_ids")), allowed_message_ids)
-    observation_ids = filter_ids(item.get("observation_ids"), allowed_observation_ids)
+    raw_evidence = item.get("evidence_message_ids")
+    if raw_evidence is None:
+        raw_evidence = item.get("evidence_ids")
+    if raw_evidence is None:
+        raw_evidence = item.get("evidence")
+    if raw_evidence is None:
+        raw_evidence = item.get("message_ids")
+    message_ids = filter_ids(raw_evidence, allowed_message_ids)
+    raw_obs = item.get("observation_ids")
+    if raw_obs is None:
+        raw_obs = item.get("observations")
+    observation_ids = filter_ids(raw_obs, allowed_observation_ids)
     if not message_ids and not observation_ids:
         return None
     start, end = _time_range(item.get("time_range"))
@@ -226,20 +286,39 @@ def _load_object(text: str) -> dict:
     if text is None or not str(text).strip():
         raise ResponseParseError("model returned an empty response")
     stripped = _FENCE.sub("", str(text).strip()).strip()
-    try:
-        payload = json.loads(stripped)
-    except json.JSONDecodeError:
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start < 0 or end <= start:
-            raise ResponseParseError("model did not return JSON") from None
-        try:
-            payload = json.loads(stripped[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise ResponseParseError("model did not return JSON") from exc
+    payload = _decode_json(stripped)
+    # GLM and similar models often return a bare list of memories.
+    if isinstance(payload, list):
+        return {"memories": payload}
     if not isinstance(payload, dict):
         raise ResponseParseError("JSON must be an object")
     return payload
+
+
+def _decode_json(stripped: str):
+    try:
+        return json.loads(stripped)
+    except json.JSONDecodeError:
+        pass
+    # Prefer an object, but also accept a top-level array when the model
+    # wraps memories in ```json fences and omits {"memories": ...}.
+    obj_start = stripped.find("{")
+    obj_end = stripped.rfind("}")
+    arr_start = stripped.find("[")
+    arr_end = stripped.rfind("]")
+    candidates: list[tuple[int, int]] = []
+    if obj_start >= 0 and obj_end > obj_start:
+        candidates.append((obj_start, obj_end))
+    if arr_start >= 0 and arr_end > arr_start:
+        candidates.append((arr_start, arr_end))
+    if not candidates:
+        raise ResponseParseError("model did not return JSON")
+    # If both exist, pick whichever starts first (array-first is common for GLM).
+    start, end = min(candidates, key=lambda pair: pair[0])
+    try:
+        return json.loads(stripped[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise ResponseParseError("model did not return JSON") from exc
 
 
 def _time_range(value) -> tuple[int | None, int | None]:

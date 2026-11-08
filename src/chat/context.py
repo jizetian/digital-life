@@ -119,7 +119,7 @@ def build_context(
         budgeted = body + "\n" + history_text if history_text else body[:max_chars]
         truncated = True
     system = render_instructions(name) + "\n\n" + body
-    user = _user(history_text, question, question_clipped)
+    user = _user(history_text, question, question_clipped, target_name=name)
     memories = [block["memory"] for block in selected if block["memory"] is not None]
     return BuiltContext(
         system=system,
@@ -204,13 +204,18 @@ def _render_body(name, personality, personality_text: str, selected: list[dict],
     return "\n".join(lines)
 
 
-def _user(history_text: str, question: str, clipped: bool) -> str:
+def _user(history_text: str, question: str, clipped: bool, *, target_name: str = "不吃香菜") -> str:
     history = history_text.strip() or "（这是会话的第一条消息）"
     note = "\n（用户这句话已按字数上限截断。）" if clipped else ""
+    name = (target_name or "不吃香菜").strip() or "不吃香菜"
     return (
         f"最近对话:\n{history}\n\n"
         f"用户:\n{question}{note}\n\n"
-        "只返回一个 JSON 对象，不要使用 Markdown。"
+        f"角色锁定：你现在就是「{name}」的数字分身在用微信回复，第一人称。\n"
+        "禁止：通用 AI 助手口吻、自称 GLM/ChatGPT、说自己无法品尝食物。\n"
+        '只返回一个 JSON 对象，键必须含 reply，例如 '
+        '{"reply":"……","cited_memory_ids":[],"cited_message_ids":[],"confidence":0.6,"uncertainty":""}。'
+        "不要使用 Markdown。"
     )
 
 

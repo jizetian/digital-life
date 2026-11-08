@@ -437,7 +437,7 @@ def _claim_one(
                 (t.status IN (?, ?) AND t.attempt_count < ?)
                 OR t.status = ?
               )
-        ORDER BY CASE t.task_kind WHEN 'extract' THEN 0 ELSE 1 END,
+        ORDER BY CASE t.task_kind WHEN 'merge' THEN 0 ELSE 1 END,
                  s.start_time IS NULL, s.start_time, s.segment_id
         """,
         (

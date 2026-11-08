@@ -23,6 +23,29 @@ log = get_logger(__name__)
 _WEAK_CONFIDENCE_CAP = 0.35
 _REJECTED_CONFIDENCE_CAP = 0.5
 
+_OOC_MARKERS = (
+    "我是一个乐于助人",
+    "乐于助人的AI",
+    "AI助手",
+    "AI 助手",
+    "大语言模型",
+    "我是 GLM",
+    "由 Z.ai",
+    "ChatGPT",
+    "我无法品尝",
+    "没有真正的喜好",
+    "作为人工智能",
+    "作为 AI",
+)
+
+
+def _looks_out_of_character(reply: str) -> bool:
+    text = (reply or "").strip()
+    if not text:
+        return True
+    return any(marker in text for marker in _OOC_MARKERS)
+
+
 
 class ChatNotFound(KeyError):
     """The caller named a session that is not in this database."""
@@ -104,6 +127,21 @@ def chat_turn(
         except LLMError as exc:
             raise ChatModelError(str(exc), session["session_id"]) from exc
         parsed = parse_twin_response(raw if isinstance(raw, str) else str(raw))
+        if (not parsed.structured) or _looks_out_of_character(parsed.reply):
+            repair = (
+                built.user
+                + "\n\n上次输出不合格：你又跳出角色了。现在必须用「"
+                + name
+                + "」的口吻，第一人称中文微信回复，"
+                + 'JSON 只能是 {"reply":"...","cited_memory_ids":[],"cited_message_ids":[],"confidence":0.5,"uncertainty":""}。'
+            )
+            try:
+                raw = client.complete(system=built.system, user=repair)
+            except LLMError as exc:
+                raise ChatModelError(str(exc), session["session_id"]) from exc
+            repaired = parse_twin_response(raw if isinstance(raw, str) else str(raw))
+            if repaired.reply and not _looks_out_of_character(repaired.reply):
+                parsed = repaired
         grounded = ground_citations(
             parsed,
             allowed_memory_ids=set(built.allowed_memory_ids),
