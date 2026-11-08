@@ -1,10 +1,10 @@
 # ChatTwin / digital-life
 
-Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。Phase 4 从会话段和 L1 观察里抽出**长期记忆**：事实、事件、关系、看法、情境，连同证据、冲突和时间线。Phase 5 用 **BGE-M3**（或可替换的嵌入客户端）、Qdrant 和 SQLite FTS5 做**混合检索**。
+Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。Phase 4 从会话段和 L1 观察里抽出**长期记忆**：事实、事件、关系、看法、情境，连同证据、冲突和时间线。Phase 5 用 **BGE-M3**（或可替换的嵌入客户端）、Qdrant 和 SQLite FTS5 做**混合检索**。Phase 6 在这些结果上做**数字分身对话**：按稳定人格说话，事实只引用检索到的记忆和消息编号，并在本机网页里把回复、证据和置信度显示出来。
 
-这里没有数字分身聊天 Agent，也没有聊天界面。
+分身的显示名是 **「不吃香菜」**。这是导出里 `is_sender = false` 的对方（`target_person`）。导出者是 `is_sender = true` 的 owner。界面语言是简体中文。
 
-ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Phase 3 merges those observations into a personality profile. Phase 4 stores long-term memories with evidence and a timeline. Phase 5 searches segments, memories, and personality traits with embeddings and SQLite FTS5. A chat agent is a later phase and is not in this tree.
+ChatTwin is a local-first archive of a WeChat history exported by Moect. Phases 1–4 store messages, observations, a personality profile, and long-term memories. Phase 5 searches them. Phase 6 replies as the target person, 「不吃香菜」, and cites retrieved evidence instead of inventing a history.
 
 ## 聊天记录只留在本机
 
@@ -15,7 +15,8 @@ ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1
 - 生成的 `*.db` 同样被忽略。SQLite 里是清洗后的原文，一样不能提交。
 - `personality/` 根目录下生成的档案（`*.md`、`*.json`）也被忽略。仓库里只保留 `personality/examples/` 的合成模板。
 - `data/qdrant/` 是向量索引，可以删掉再从 SQLite 重建。不要提交。
-- 导入和检索 API 只应绑定在 `127.0.0.1`。它不是对外服务。
+- 对话也写在同一个 SQLite 里（`chat_sessions`、`chat_messages`）。不要把这个库提交到 Git。
+- HTTP 只绑定在 `127.0.0.1`。用 `python -m scripts.serve` 启动，它没有 host 参数，不会听其他网卡。
 
 仓库里唯一的对话样本是开发用的前 300 条：`tests/fixtures/chattwin_moect_sample.json`。它不能代替你的全量文件。
 
@@ -382,9 +383,72 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/search \
   -d '{"db_path":"data/database/cleaned_messages.db","query":"搬到了上海","limit":10}'
 ```
 
-索引任务的返回值是计数，不是正文。搜索接口会返回索引进去的文本、分数和证据 id，因为不返回这些就没法看结果。它仍然不是聊天 Agent。
+索引任务的返回值是计数，不是正文。搜索接口会返回索引进去的文本、分数和证据 id，因为不返回这些就没法看结果。
 
 SQLite 新增：`retrieval_documents`、`retrieval_embeddings`、`retrieval_fts`。
+
+## Phase 6：数字分身对话
+
+对话读三样已经有的东西，不再重做前面的阶段：
+
+| 放进提示词的内容 | 从哪来 |
+|---|---|
+| 稳定说法 | SQLite 里最新一版 `status = stable` 的 L2 特质。没有的话，读 `personality/personality_core.md` 的 Stable traits。`provisional` 不进人格块 |
+| 这次问题的证据 | Phase 5 的 `hybrid_search`：会话段、长期记忆、特质。带 `evidence_message_ids` 的记忆先放进去 |
+| 最近几轮 | 同一 SQLite 里的 `chat_messages` |
+
+字数预算默认 6000，只管人格、检索证据和最近对话。固定的系统说明不占这 6000 字。当前这句话单独截断，避免一条很长的输入把证据挤掉。证据不够（没有带消息编号的记忆或会话段）时，提示词写明「证据不足」，回复会标明这是 AI 模拟，置信度也不会高过 0.35。
+
+模型仍是 OpenAI 兼容接口，和前面共用 `CHATTWIN_LLM_BASE_URL`、`CHATTWIN_LLM_MODEL`、`CHATTWIN_LLM_API_KEY`。聊天温度默认 0.4，蒸馏任务仍是 0。密钥只放在环境变量里。
+
+```bash
+export CHATTWIN_LLM_BASE_URL=http://127.0.0.1:11434/v1
+export CHATTWIN_LLM_MODEL=qwen2.5:7b
+# 嵌入没单独配置时，检索沿用上面的地址。BGE-M3 的名字仍用 CHATTWIN_EMBEDDING_MODEL。
+export CHATTWIN_EMBEDDING_MODEL=bge-m3
+```
+
+系统提示在 `prompts/twin_chat_v1.md`（`twin-v1`）。它要求模型用「不吃香菜」的口气说简体中文，事实必须来自提示词里列出的 memory id / message id，不许编造经历。对方问「你是谁」时要说明自己是 AI 模拟。普通闲聊不必每句都加长免责声明，页面上一直有「AI 模拟」标记。
+
+模型要返回一个 JSON 对象：`reply`、`cited_memory_ids`、`cited_message_ids`、`confidence`、`uncertainty`。服务端会丢掉任何不在本次检索里的编号。引用了一条记忆时，这条记忆自己的 `evidence_message_ids` 会进入结果里的 `evidence_message_ids`。`retrieved_memories` 只含放进提示词的记忆，不会出现模型临时编出来的 id。
+
+接口是同步的。整段回复写进 SQLite 之后才返回 JSON，没有 SSE，也没有 `stream` 参数。
+
+```bash
+python -m scripts.serve
+# 浏览器打开 http://127.0.0.1:8000/
+```
+
+`scripts.serve` 只听 `127.0.0.1`。页面是仓库里的 `web/index.html`，由同一个进程返回，不依赖 Open WebUI。默认数据库是 `CHATTWIN_DB_PATH` 或 `config/settings.yaml` 里的路径。
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/chat \
+  -H 'content-type: application/json' \
+  -d '{"message":"你后来搬去哪了"}'
+
+curl -s http://127.0.0.1:8000/api/v1/chat/sessions
+curl -s http://127.0.0.1:8000/api/v1/chat/sessions/<session_id>
+```
+
+继续同一个会话时带上返回的 `session_id`。可选字段：`db_path`、`target_name`、`use_vector`、`use_fts`、`limit`。
+
+命令行同样打到本机库。没有 `--message` 时进入一行一句的对话，`/quit` 退出。
+
+```bash
+python -m scripts.chat \
+  --db data/database/cleaned_messages.db \
+  --message "你后来搬去哪了"
+
+python -m scripts.chat \
+  --db data/database/cleaned_messages.db \
+  --session <session_id>
+```
+
+`--no-vector` 只走 FTS。嵌入服务暂时连不上、但全文索引还在时，对话会自己退回全文检索，再失败才报错。全文检索把整句当成一个短语，所以一句长问题经常对不上短记忆。整句没有命中时，对话会再用问题里的短片段走同一套 `run_search`（只走全文），例如「你后来搬到了上海吗」仍能命中「搬到了上海」。已经有向量时，整句走稠密检索，不再切片段。库里还没有投影时，检索是空的，分身会说证据不足，而不是编一段经历。
+
+向量索引不是聊天记录。删掉 `data/qdrant/` 之后按 Phase 5 重跑 `build_embeddings` 即可。切分 `--rebuild` 会清掉记忆、特质和检索投影，已经写好的对话行会留下，但旧的证据编号可能对不上新的消息。
+
+SQLite 新增：`chat_sessions`、`chat_messages`。
 
 ## 路线图
 
@@ -392,8 +456,8 @@ SQLite 新增：`retrieval_documents`、`retrieval_embeddings`、`retrieval_fts`
 2. Phase 2 — 切分与 L1 观察（已在本仓库）
 3. Phase 3 — 人格蒸馏 L2/L3（已在本仓库）
 4. Phase 4 — 长期记忆（已在本仓库）
-5. Phase 5 — 混合检索（当前）
-6. 对话 Agent 与界面
+5. Phase 5 — 混合检索（已在本仓库）
+6. Phase 6 — 对话 Agent 与界面（已在本仓库）
 
 ## 开发
 
@@ -401,4 +465,4 @@ SQLite 新增：`retrieval_documents`、`retrieval_embeddings`、`retrieval_fts`
 pytest
 ```
 
-测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型或 GPU。记忆测试用假的模型客户端。检索测试用确定性的嵌入客户端和内存向量库；Qdrant 适配器用客户端自带的内存模式，不连外部服务。
+测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型或 GPU。记忆测试和对话测试用假的模型客户端。检索测试用确定性的嵌入客户端和内存向量库；Qdrant 适配器用客户端自带的内存模式，不连外部服务。对话测试里的检索要么是脚本写好的命中，要么是内存向量库加 SQLite 全文索引。

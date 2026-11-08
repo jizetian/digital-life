@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-Hans-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ChatTwin · 不吃香菜</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f0e8;
+      --panel: #fffdf8;
+      --ink: #1c1915;
+      --muted: #6d6458;
+      --line: #e4dccf;
+      --accent: #1f6b4a;
+      --accent-ink: #f4fff8;
+      --warn: #8a4b12;
+      --warn-bg: #fff1e4;
+      --user: #e7f2ec;
+      --shadow: 0 10px 30px rgba(40, 30, 10, 0.06);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Songti SC", "Noto Serif SC", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(1200px 500px at 10% -10%, #fff 0%, transparent 50%),
+        var(--bg);
+    }
+    button, textarea { font: inherit; }
+    .app {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      min-height: 100vh;
+    }
+    aside {
+      padding: 20px 16px;
+      border-right: 1px solid var(--line);
+      background: rgba(255, 253, 248, 0.8);
+    }
+    .brand { font-size: 13px; letter-spacing: 0.08em; color: var(--muted); }
+    h1 { font-size: 28px; margin: 8px 0 4px; font-weight: 600; }
+    .badge {
+      display: inline-block;
+      margin: 8px 0 16px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--warn-bg);
+      color: var(--warn);
+      font-size: 13px;
+    }
+    .new {
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: var(--accent);
+      color: var(--accent-ink);
+      cursor: pointer;
+    }
+    .sessions { list-style: none; padding: 12px 0 0; margin: 0; }
+    .sessions button {
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      padding: 10px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+      color: inherit;
+    }
+    .sessions button.active, .sessions button:hover { background: #efe7da; }
+    .sessions small { display: block; color: var(--muted); font-size: 12px; }
+    main { display: flex; flex-direction: column; min-width: 0; }
+    .thread {
+      flex: 1;
+      overflow: auto;
+      padding: 28px 8vw 12px;
+    }
+    .empty { color: var(--muted); max-width: 40rem; line-height: 1.6; }
+    .bubble {
+      max-width: 46rem;
+      margin: 0 0 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      white-space: pre-wrap;
+      line-height: 1.55;
+    }
+    .bubble.user { background: var(--user); margin-left: auto; }
+    .meta { margin-top: 8px; color: var(--muted); font-size: 13px; font-family: "Segoe UI", sans-serif; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-family: ui-monospace, monospace;
+    }
+    .memory {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+    }
+    .error {
+      margin: 12px 8vw 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: var(--warn-bg);
+      color: var(--warn);
+    }
+    form {
+      display: flex;
+      gap: 10px;
+      padding: 12px 8vw 22px;
+    }
+    textarea {
+      flex: 1;
+      resize: vertical;
+      min-height: 56px;
+      max-height: 180px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      padding: 12px;
+      background: var(--panel);
+      color: inherit;
+    }
+    form button {
+      border: 0;
+      border-radius: 12px;
+      padding: 0 18px;
+      background: var(--ink);
+      color: #fff;
+      cursor: pointer;
+    }
+    form button:disabled { opacity: 0.5; cursor: wait; }
+    footer.note {
+      padding: 0 8vw 18px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    @media (max-width: 800px) {
+      .app { grid-template-columns: 1fr; }
+      aside { border-right: 0; border-bottom: 1px solid var(--line); }
+      .thread, form, footer.note, .error { padding-left: 16px; padding-right: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside>
+      <div class="brand">CHATTWIN</div>
+      <h1>不吃香菜</h1>
+      <div class="badge">AI 模拟 · 不是本人</div>
+      <button class="new" type="button" id="new-chat">新对话</button>
+      <ul class="sessions" id="sessions"></ul>
+    </aside>
+    <main>
+      <div class="thread" id="thread">
+        <p class="empty">这是「不吃香菜」的本地 AI 模拟。回答会尽量引用检索到的记忆和消息编号；证据不够时会说明不确定，而不是编造经历。</p>
+      </div>
+      <div id="error" class="error" hidden></div>
+      <form id="composer">
+        <textarea id="input" placeholder="说点什么…" aria-label="消息"></textarea>
+        <button type="submit" id="send">发送</button>
+      </form>
+      <footer class="note">页面和接口只应跑在本机 127.0.0.1。会话写在本地 SQLite，不会单独提交到仓库。回复是同步返回的，没有流式输出。</footer>
+    </main>
+  </div>
+  <script>
+    const thread = document.querySelector("#thread");
+    const sessionsEl = document.querySelector("#sessions");
+    const errorEl = document.querySelector("#error");
+    const input = document.querySelector("#input");
+    const send = document.querySelector("#send");
+    let sessionId = null;
+
+    function showError(text) {
+      if (!text) {
+        errorEl.hidden = true;
+        errorEl.textContent = "";
+        return;
+      }
+      errorEl.hidden = false;
+      errorEl.textContent = text;
+    }
+
+    function chip(text) {
+      const span = document.createElement("span");
+      span.className = "chip";
+      span.textContent = text;
+      return span;
+    }
+
+    function renderMessages(messages) {
+      thread.replaceChildren();
+      if (!messages.length) {
+        const empty = document.createElement("p");
+        empty.className = "empty";
+        empty.textContent = "新对话还没有消息。";
+        thread.append(empty);
+        return;
+      }
+      for (const message of messages) {
+        const bubble = document.createElement("article");
+        bubble.className = "bubble" + (message.role === "user" ? " user" : "");
+        const body = document.createElement("div");
+        body.textContent = message.content || "";
+        bubble.append(body);
+        if (message.role === "assistant") {
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          const bits = ["AI 模拟"];
+          if (message.confidence !== null && message.confidence !== undefined) {
+            bits.push("置信度 " + Math.round(Number(message.confidence) * 100) + "%");
+          }
+          if (message.retrieval_weak) bits.push("证据不足");
+          meta.textContent = bits.join(" · ");
+          bubble.append(meta);
+          if (message.uncertainty) {
+            const note = document.createElement("div");
+            note.className = "meta";
+            note.textContent = message.uncertainty;
+            bubble.append(note);
+          }
+          const ids = message.evidence_message_ids || [];
+          if (ids.length) {
+            const chips = document.createElement("div");
+            chips.className = "chips";
+            for (const id of ids) chips.append(chip(id));
+            bubble.append(chips);
+          }
+          const memories = message.retrieved_memories || [];
+          for (const memory of memories) {
+            const row = document.createElement("div");
+            row.className = "memory";
+            const label = memory.cited ? "引用记忆 " : "检索记忆 ";
+            row.textContent = label + (memory.memory_id || "") + " " + (memory.text || "");
+            bubble.append(row);
+          }
+        }
+        thread.append(bubble);
+      }
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    async function loadSessions() {
+      const response = await fetch("/api/v1/chat/sessions");
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) return;
+      sessionsEl.replaceChildren();
+      for (const session of data.sessions || []) {
+        const item = document.createElement("li");
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = session.session_id === sessionId ? "active" : "";
+        button.textContent = session.title || "新对话";
+        const small = document.createElement("small");
+        small.textContent = (session.message_count || 0) + " 条";
+        button.append(small);
+        button.addEventListener("click", () => openSession(session.session_id));
+        item.append(button);
+        sessionsEl.append(item);
+      }
+    }
+
+    async function openSession(id) {
+      sessionId = id;
+      showError("");
+      const response = await fetch("/api/v1/chat/sessions/" + encodeURIComponent(id));
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        showError(detailText(data, response.statusText));
+        return;
+      }
+      renderMessages(data.messages || []);
+      await loadSessions();
+    }
+
+    function detailText(data, fallback) {
+      const detail = data && data.detail;
+      if (typeof detail === "string") return detail;
+      if (detail && typeof detail.message === "string") return detail.message;
+      return fallback || "请求失败";
+    }
+
+    document.querySelector("#new-chat").addEventListener("click", () => {
+      sessionId = null;
+      showError("");
+      renderMessages([]);
+      loadSessions();
+      input.focus();
+    });
+
+    document.querySelector("#composer").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = input.value.trim();
+      if (!message) return;
+      send.disabled = true;
+      showError("");
+      try {
+        const response = await fetch("/api/v1/chat", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, session_id: sessionId }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const detail = data.detail;
+          if (detail && detail.session_id) sessionId = detail.session_id;
+          showError(detailText(data, response.statusText));
+          if (sessionId) await openSession(sessionId);
+          return;
+        }
+        sessionId = data.session_id;
+        input.value = "";
+        await openSession(sessionId);
+      } catch (error) {
+        showError(error && error.message ? error.message : "网络错误");
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    });
+
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        document.querySelector("#composer").requestSubmit();
+      }
+    });
+
+    loadSessions();
+  </script>
+</body>
+</html>

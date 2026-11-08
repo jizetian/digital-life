@@ -1,7 +1,7 @@
-"""Local import, segmentation, distillation, personality, memory, and search API.
+"""Local import, segmentation, distillation, personality, memory, search, and chat API.
 
 Bind it to 127.0.0.1. Chat exports, the SQLite file, and the Qdrant directory
-stay on this machine. This service searches the index. It does not run a chat agent.
+stay on this machine. The chat reply is synchronous JSON. It is not streamed.
 """
 
 from __future__ import annotations
@@ -17,13 +17,17 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from chat.agent import ChatModelError, ChatNotFound, chat_turn
+from chat.store import get_session, list_sessions
 from common.clock import utc_now
 from common.config import default_db_path
 from common.database import init_db
 from common.logger import configure_logging, get_logger
 from distillation.engine import run_distillation
+from distillation.llm import LLMError
 from distillation.status import pipeline_status
 from importer.import_service import begin_import, get_job, run_import
 from memory.memory_engine import run_memory
@@ -126,15 +130,34 @@ class SearchRequest(BaseModel):
     qdrant_url: str | None = None
 
 
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str | None = None
+    db_path: str | None = None
+    target_name: str | None = None
+    use_vector: bool = True
+    use_fts: bool = True
+    limit: int | None = Field(None, ge=1, le=100)
+
+
+_UI_PATH = Path(__file__).resolve().parents[2] / "web" / "index.html"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ChatTwin Local API",
-        version="0.5.0",
+        version="0.6.0",
         description=(
             "Local-first Moect import, segmentation, distillation, personality, long-term memory, "
-            "and hybrid search. No chat agent."
+            "hybrid search, and a digital-twin chat. The chat reply is synchronous JSON."
         ),
     )
+
+    @app.get("/")
+    def chat_page():
+        if not _UI_PATH.is_file():
+            raise HTTPException(status_code=404, detail="chat page is missing")
+        return FileResponse(_UI_PATH, media_type="text/html; charset=utf-8")
 
     @app.post("/api/v1/import")
     def start_import(body: ImportRequest) -> dict:
@@ -431,6 +454,59 @@ def create_app() -> FastAPI:
             dimension=dimension,
         )
 
+    @app.post("/api/v1/chat")
+    def post_chat(body: ChatRequest) -> dict:
+        database = _existing_db(body.db_path)
+        try:
+            return chat_turn(
+                database,
+                body.message,
+                session_id=body.session_id,
+                target_name=body.target_name,
+                use_vector=body.use_vector,
+                use_fts=body.use_fts,
+                limit=body.limit,
+            )
+        except ChatNotFound:
+            raise HTTPException(status_code=404, detail="chat session not found") from None
+        except ChatModelError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={"message": str(exc), "session_id": exc.session_id},
+            ) from exc
+        except (LLMError, RetrievalError) as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/v1/chat/sessions")
+    def read_chat_sessions(
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+        limit: int = Query(50, ge=1, le=200),
+    ) -> dict:
+        database = _database_file(db)
+        conn = init_db(database)
+        try:
+            sessions = list_sessions(conn, limit)
+        finally:
+            conn.close()
+        return {"sessions": sessions}
+
+    @app.get("/api/v1/chat/sessions/{session_id}")
+    def read_chat_session(
+        session_id: str,
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+    ) -> dict:
+        database = _database_file(db)
+        conn = init_db(database)
+        try:
+            session = get_session(conn, session_id)
+        finally:
+            conn.close()
+        if session is None:
+            raise HTTPException(status_code=404, detail="chat session not found")
+        return session
+
     return app
 
 
@@ -441,6 +517,13 @@ def _search(database: Path, query: str, **kwargs) -> dict:
         raise HTTPException(status_code=404, detail=f"database not found: {exc}") from exc
     except (RetrievalError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _database_file(db: str | None) -> Path:
+    database = Path(db).expanduser() if db else default_db_path()
+    if not database.is_file():
+        raise HTTPException(status_code=404, detail=f"database not found: {database}")
+    return database
 
 
 def _existing_db(db_path: str | None) -> Path:
