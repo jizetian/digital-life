@@ -62,6 +62,16 @@ _DEFAULTS = {
         "candidate_limit": 40,
         "max_chars": 8000,
     },
+    "chat": {
+        "target_name": "不吃香菜",
+        "max_chars": 6000,
+        "personality_chars": 1400,
+        "history_turns": 8,
+        "history_chars": 1600,
+        "user_chars": 2000,
+        "retrieval_limit": 8,
+        "temperature": 0.4,
+    },
 }
 
 
@@ -195,6 +205,22 @@ def qdrant_path() -> Path:
     if not path.is_absolute():
         path = ROOT / path
     return path
+
+
+def chat_config() -> dict:
+    """Digital-twin chat settings. The model endpoint is the shared LLM client."""
+    cfg = _merged_section("chat")
+    _apply_str(cfg, "CHATTWIN_CHAT_TARGET_NAME", "target_name")
+    _apply_int(cfg, "CHATTWIN_CHAT_MAX_CHARS", "max_chars")
+    _apply_int(cfg, "CHATTWIN_CHAT_PERSONALITY_CHARS", "personality_chars")
+    _apply_int(cfg, "CHATTWIN_CHAT_HISTORY_TURNS", "history_turns")
+    _apply_int(cfg, "CHATTWIN_CHAT_HISTORY_CHARS", "history_chars")
+    _apply_int(cfg, "CHATTWIN_CHAT_USER_CHARS", "user_chars")
+    _apply_int(cfg, "CHATTWIN_CHAT_RETRIEVAL_LIMIT", "retrieval_limit")
+    raw_temperature = os.environ.get("CHATTWIN_CHAT_TEMPERATURE")
+    if raw_temperature:
+        cfg["temperature"] = float(raw_temperature)
+    return cfg
 
 
 def personality_config() -> dict:

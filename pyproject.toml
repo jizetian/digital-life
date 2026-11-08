@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chattwin"
-version = "0.5.0"
-description = "ChatTwin: local import, memory, and hybrid retrieval"
+version = "0.6.0"
+description = "ChatTwin: local import, memory, retrieval, and a digital twin"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

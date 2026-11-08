@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chat.status import chat_snapshot_conn, format_chat_status
 from common.database import init_db
 from common.statuses import PIPELINE_STATUSES
 from memory.status import format_memory_status, memory_snapshot_conn
@@ -52,6 +53,7 @@ def pipeline_status(db_path: str | Path) -> dict:
             "personality": personality_snapshot_conn(conn),
             "memory": memory_snapshot_conn(conn),
             "retrieval": retrieval_snapshot_conn(conn),
+            "chat": chat_snapshot_conn(conn),
         }
     finally:
         conn.close()
@@ -88,6 +90,9 @@ def format_pipeline_status(status: dict) -> str:
     retrieval = status.get("retrieval")
     if retrieval is not None:
         lines.append(format_retrieval_status(retrieval))
+    chat = status.get("chat")
+    if chat is not None:
+        lines.append(format_chat_status(chat))
     return "\n".join(lines)
 
 

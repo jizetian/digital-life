@@ -496,6 +496,39 @@ CREATE TRIGGER IF NOT EXISTS retrieval_fts_au AFTER UPDATE OF text ON retrieval_
     INSERT INTO retrieval_fts(retrieval_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
     INSERT INTO retrieval_fts(rowid, text) VALUES (new.rowid, new.text);
 END;
+
+-- Digital-twin chat. Sessions stay in this SQLite file and are not source data.
+-- Evidence ids are copied from a retrieval hit; they are not a foreign key, so a
+-- later segment rebuild does not delete the conversation.
+CREATE TABLE IF NOT EXISTS chat_sessions (
+    session_id TEXT PRIMARY KEY,
+    title TEXT,
+    target_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    message_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    retrieved_memories_json TEXT,
+    evidence_message_ids_json TEXT,
+    context_hits_json TEXT,
+    confidence REAL,
+    uncertainty TEXT,
+    retrieval_weak INTEGER,
+    model TEXT,
+    created_at TEXT NOT NULL,
+    CHECK (role IN ('user', 'assistant')),
+    CHECK (retrieval_weak IS NULL OR retrieval_weak IN (0, 1)),
+    CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
+    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+    ON chat_messages(session_id, created_at);
 """
 
 

@@ -57,3 +57,15 @@ retrieval:
   default_limit: 10
   candidate_limit: 40
   max_chars: 8000
+
+# Digital-twin chat. The model URL and name come from distillation above.
+# Sessions are rows in the same SQLite file. They are not committed.
+chat:
+  target_name: 不吃香菜
+  max_chars: 6000
+  personality_chars: 1400
+  history_turns: 8
+  history_chars: 1600
+  user_chars: 2000
+  retrieval_limit: 8
+  temperature: 0.4

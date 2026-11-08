@@ -1,4 +1,4 @@
-"""Show segmentation, L1 distillation, personality, memory, and retrieval counts.
+"""Show segmentation, distillation, personality, memory, retrieval, and chat counts.
 
     python -m scripts.show_status --db data/database/cleaned_messages.db
 """
