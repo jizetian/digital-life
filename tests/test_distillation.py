@@ -248,7 +248,8 @@ def test_distillation_resumes_after_max_tasks_and_a_running_task(tmp_path: Path)
             assert set(evidence) <= set(allowed)
         task_id = conn.execute("SELECT task_id FROM distillation_tasks LIMIT 1").fetchone()["task_id"]
         conn.execute(
-            "UPDATE distillation_tasks SET status = 'running', attempt_count = 1 WHERE task_id = ?",
+            "UPDATE distillation_tasks SET status = 'running', attempt_count = 1, "
+            "updated_at = '2020-01-01T00:00:00+00:00' WHERE task_id = ?",
             (task_id,),
         )
         conn.execute("DELETE FROM l1_observations WHERE task_id = ?", (task_id,))
