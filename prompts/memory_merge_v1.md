@@ -27,3 +27,8 @@ Rules:
 - One action per candidate_index. Cover every candidate.
 - note is a short reason, or an empty string. Do not quote the chat.
 - Do not wrap the JSON in markdown.
+
+Strict output for tool parsers:
+- Top level MUST be {"actions":[...]} — not a bare array.
+- action must be exactly one of insert, duplicate, supersede, historical, conflict, related.
+- When existing is empty, insert every candidate.

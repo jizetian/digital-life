@@ -129,7 +129,18 @@ def _load_object(text: str) -> dict | None:
 
 
 def _reply_text(payload: dict) -> str:
-    for key in ("reply", "content", "text"):
+    for key in (
+        "reply",
+        "content",
+        "text",
+        "answer",
+        "message",
+        "response",
+        "introduction",
+        "intro",
+        "output",
+        "utterance",
+    ):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
