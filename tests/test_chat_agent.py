@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from chat.agent import chat_turn
+from chat.agent import chat_turn, search_hits
 from chat.parser import ground_citations, parse_twin_response
 from common.database import init_db
 from distillation.llm import LLMError
@@ -159,6 +159,23 @@ def test_hybrid_search_feeds_the_agent_without_a_live_model(tmp_path: Path, monk
     assert "搬到了上海" in fake.calls[0]["system"]
 
 
+def test_segment_only_primary_still_retrieves_the_memory(tmp_path: Path, monkeypatch):
+    """A full question can match a segment and miss a short memory as one FTS phrase."""
+    monkeypatch.setenv("CHATTWIN_VECTOR_BACKEND", "memory")
+    question = "你是美术学院数媒专业的吗"
+    db_path = _indexed_segment_and_memory(tmp_path / "major.db", question)
+    hits = search_hits(db_path, question, limit=8, use_vector=False, use_fts=True)
+    assert hits[0]["collection"] == "long_term_memories"
+    assert hits[0]["source_id"] == "mem-major"
+    assert "seg-major" in {hit["source_id"] for hit in hits}
+
+    fake = FakeLLM()
+    result = chat_turn(db_path, question, llm=fake, use_vector=False)
+    assert {item["memory_id"] for item in result["retrieved_memories"]} == {"mem-major"}
+    assert result["retrieval_weak"] is False
+    assert "美术学院数媒" in fake.calls[0]["system"]
+
+
 def _indexed_memory(db_path: Path) -> Path:
     conn = init_db(db_path)
     conn.execute(
@@ -175,6 +192,43 @@ def _indexed_memory(db_path: Path) -> Path:
         (
             json.dumps(
                 {"memory_type": "fact", "status": "active", "evidence_message_ids": ["m-real"]},
+                ensure_ascii=False,
+            ),
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def _indexed_segment_and_memory(db_path: Path, question: str) -> Path:
+    conn = init_db(db_path)
+    conn.execute(
+        """
+        INSERT INTO retrieval_documents (
+            doc_id, collection, source_id, text, text_hash, content_hash,
+            time_start, time_end, metadata_json, updated_at
+        ) VALUES (
+            'conversation_segments:seg-major', 'conversation_segments', 'seg-major',
+            ?, 'hs', 'cs', NULL, NULL, ?, '2026-01-01T00:00:00+00:00'
+        )
+        """,
+        (question, json.dumps({"message_ids": ["m-major"]}, ensure_ascii=False)),
+    )
+    conn.execute(
+        """
+        INSERT INTO retrieval_documents (
+            doc_id, collection, source_id, text, text_hash, content_hash,
+            time_start, time_end, metadata_json, updated_at
+        ) VALUES (
+            'long_term_memories:mem-major', 'long_term_memories', 'mem-major',
+            '[fact/active] 美术学院数媒', 'hm', 'cm', NULL, NULL, ?,
+            '2026-01-01T00:00:00+00:00'
+        )
+        """,
+        (
+            json.dumps(
+                {"memory_type": "fact", "status": "active", "evidence_message_ids": ["m-major"]},
                 ensure_ascii=False,
             ),
         ),
