@@ -1,7 +1,7 @@
-"""Local import, segmentation, distillation, personality, and memory API.
+"""Local import, segmentation, distillation, personality, memory, and search API.
 
-Bind it to 127.0.0.1. Chat exports and the SQLite file stay on this machine.
-This service does not run a vector store or a chat agent.
+Bind it to 127.0.0.1. Chat exports, the SQLite file, and the Qdrant directory
+stay on this machine. This service searches the index. It does not run a chat agent.
 """
 
 from __future__ import annotations
@@ -31,6 +31,9 @@ from memory.status import memory_snapshot
 from memory.timeline_builder import build_timeline
 from personality.engine import run_personality
 from personality.status import personality_snapshot
+from retrieval.errors import RetrievalError
+from retrieval.service import run_index, run_search
+from retrieval.status import retrieval_snapshot_conn
 from segmentation.service import run_segmentation
 
 log = get_logger(__name__)
@@ -88,13 +91,48 @@ class MemoryRequest(BaseModel):
     prompt_version: str | None = None
 
 
+class EmbedRequest(BaseModel):
+    db_path: str | None = None
+    rebuild: bool = False
+    collections: list[str] | None = None
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    batch_size: int | None = None
+    vector_backend: str | None = None
+    qdrant_path: str | None = None
+    qdrant_url: str | None = None
+
+
+class SearchRequest(BaseModel):
+    query: str
+    db_path: str | None = None
+    collections: list[str] | None = None
+    limit: int | None = Field(None, ge=1, le=100)
+    use_vector: bool = True
+    use_fts: bool = True
+    rerank: bool = False
+    memory_status: str | None = None
+    memory_type: str | None = None
+    trait_status: str | None = None
+    dimension: str | None = None
+    time_start: int | None = None
+    time_end: int | None = None
+    provider: str | None = None
+    model: str | None = None
+    base_url: str | None = None
+    vector_backend: str | None = None
+    qdrant_path: str | None = None
+    qdrant_url: str | None = None
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="ChatTwin Local API",
-        version="0.4.0",
+        version="0.5.0",
         description=(
-            "Local-first Moect import, segmentation, distillation, personality, and long-term memory. "
-            "No vector store or chat agent."
+            "Local-first Moect import, segmentation, distillation, personality, long-term memory, "
+            "and hybrid search. No chat agent."
         ),
     )
 
@@ -296,7 +334,113 @@ def create_app() -> FastAPI:
     ) -> dict:
         return _read_processing_job(job_id, db)
 
+    @app.post("/api/v1/embeddings")
+    def start_embeddings(body: EmbedRequest) -> dict:
+        database = _existing_db(body.db_path)
+        return _launch(
+            database,
+            "embeddings",
+            {"rebuild": body.rebuild, "collections": body.collections},
+            lambda: run_index(
+                database,
+                collections=body.collections,
+                rebuild=body.rebuild,
+                provider=body.provider,
+                model=body.model,
+                base_url=body.base_url,
+                batch_size=body.batch_size,
+                vector_backend=body.vector_backend,
+                qdrant_path=body.qdrant_path,
+                qdrant_url=body.qdrant_url,
+            ),
+        )
+
+    @app.get("/api/v1/embeddings/status")
+    def read_embeddings_status(
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+    ) -> dict:
+        database = Path(db).expanduser() if db else default_db_path()
+        if not database.is_file():
+            raise HTTPException(status_code=404, detail=f"database not found: {database}")
+        conn = init_db(database)
+        try:
+            return retrieval_snapshot_conn(conn)
+        finally:
+            conn.close()
+
+    @app.get("/api/v1/embeddings/{job_id}")
+    def read_embeddings(
+        job_id: str,
+        db: str | None = Query(None, description="SQLite path, if this process did not start the job"),
+    ) -> dict:
+        return _read_processing_job(job_id, db)
+
+    @app.post("/api/v1/search")
+    def search_post(body: SearchRequest) -> dict:
+        database = _existing_db(body.db_path)
+        return _search(
+            database,
+            body.query,
+            collections=body.collections,
+            limit=body.limit,
+            use_vector=body.use_vector,
+            use_fts=body.use_fts,
+            rerank=body.rerank,
+            memory_status=body.memory_status,
+            memory_type=body.memory_type,
+            trait_status=body.trait_status,
+            dimension=body.dimension,
+            time_start=body.time_start,
+            time_end=body.time_end,
+            provider=body.provider,
+            model=body.model,
+            base_url=body.base_url,
+            vector_backend=body.vector_backend,
+            qdrant_path=body.qdrant_path,
+            qdrant_url=body.qdrant_url,
+        )
+
+    @app.get("/api/v1/search")
+    def search_get(
+        q: str = Query(..., description="Search text"),
+        db: str | None = Query(None, description="SQLite path. Defaults to the configured local database"),
+        collection: list[str] | None = Query(None, description="Repeat to limit collections"),
+        limit: int = Query(10, ge=1, le=100),
+        use_vector: bool = True,
+        use_fts: bool = True,
+        rerank: bool = False,
+        memory_status: str | None = None,
+        memory_type: str | None = None,
+        trait_status: str | None = None,
+        dimension: str | None = None,
+    ) -> dict:
+        database = Path(db).expanduser() if db else default_db_path()
+        if not database.is_file():
+            raise HTTPException(status_code=404, detail=f"database not found: {database}")
+        return _search(
+            database,
+            q,
+            collections=collection,
+            limit=limit,
+            use_vector=use_vector,
+            use_fts=use_fts,
+            rerank=rerank,
+            memory_status=memory_status,
+            memory_type=memory_type,
+            trait_status=trait_status,
+            dimension=dimension,
+        )
+
     return app
+
+
+def _search(database: Path, query: str, **kwargs) -> dict:
+    try:
+        return run_search(database, query, **kwargs)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"database not found: {exc}") from exc
+    except (RetrievalError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _existing_db(db_path: str | None) -> Path:

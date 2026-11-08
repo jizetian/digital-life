@@ -77,8 +77,9 @@ def run_segmentation(
     A finished checkpoint whose message count still matches is left as-is.
     An unfinished checkpoint for the same parameters resumes after the last
     committed message. ``--rebuild`` deletes segments, cascaded distillation
-    rows, personality rows, and long-term memory rows, then starts over.
-    ``max_segments`` stops early and leaves a running checkpoint.
+    rows, personality rows, long-term memory rows, and the retrieval
+    projection, then starts over. ``max_segments`` stops early and leaves a
+    running checkpoint.
     """
     database = Path(db_path).expanduser().resolve()
     if not database.is_file():
@@ -277,6 +278,12 @@ def _clear_segmentation(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM l2_traits")
     conn.execute("DELETE FROM personality_tasks")
     conn.execute("DELETE FROM personality_checkpoint")
+    # The retrieval projection cites those rows. Qdrant itself is rebuilt by
+    # the next build_embeddings run; drop the SQLite copy here so search does
+    # not keep documents whose sources were just deleted.
+    conn.execute("DELETE FROM retrieval_embeddings")
+    conn.execute("DELETE FROM retrieval_documents")
+    conn.execute("INSERT INTO retrieval_fts(retrieval_fts) VALUES ('rebuild')")
     conn.commit()
 
 

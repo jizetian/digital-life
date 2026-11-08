@@ -45,6 +45,23 @@ _DEFAULTS = {
         "max_chars_per_message": 2000,
         "max_existing": 40,
     },
+    "retrieval": {
+        "embedding_provider": "openai",
+        "embedding_model": "bge-m3",
+        "embedding_base_url": "",
+        "embedding_dimension": 1024,
+        "embedding_batch_size": 16,
+        "embedding_timeout_seconds": 120,
+        "qdrant_path": "data/qdrant",
+        "qdrant_url": "",
+        "qdrant_api_key": "",
+        "vector_backend": "qdrant",
+        "rerank_url": "",
+        "rrf_k": 60,
+        "default_limit": 10,
+        "candidate_limit": 40,
+        "max_chars": 8000,
+    },
 }
 
 
@@ -149,6 +166,35 @@ def memory_config() -> dict:
     _apply_int(cfg, "CHATTWIN_MEMORY_MAX_EXISTING", "max_existing")
     _apply_str(cfg, "CHATTWIN_MEMORY_PROMPT_VERSION", "prompt_version")
     return cfg
+
+
+def retrieval_config() -> dict:
+    """Hybrid retrieval settings. The embedding endpoint is separate from the chat model."""
+    cfg = _merged_section("retrieval")
+    _apply_str(cfg, "CHATTWIN_EMBEDDING_PROVIDER", "embedding_provider")
+    _apply_str(cfg, "CHATTWIN_EMBEDDING_MODEL", "embedding_model")
+    _apply_str(cfg, "CHATTWIN_EMBEDDING_BASE_URL", "embedding_base_url")
+    _apply_int(cfg, "CHATTWIN_EMBEDDING_DIMENSION", "embedding_dimension")
+    _apply_int(cfg, "CHATTWIN_EMBEDDING_BATCH_SIZE", "embedding_batch_size")
+    _apply_int(cfg, "CHATTWIN_EMBEDDING_TIMEOUT", "embedding_timeout_seconds")
+    _apply_str(cfg, "CHATTWIN_QDRANT_PATH", "qdrant_path")
+    _apply_str(cfg, "CHATTWIN_QDRANT_URL", "qdrant_url")
+    _apply_str(cfg, "CHATTWIN_QDRANT_API_KEY", "qdrant_api_key")
+    _apply_str(cfg, "CHATTWIN_VECTOR_BACKEND", "vector_backend")
+    _apply_str(cfg, "CHATTWIN_RERANK_URL", "rerank_url")
+    _apply_int(cfg, "CHATTWIN_RRF_K", "rrf_k")
+    _apply_int(cfg, "CHATTWIN_SEARCH_LIMIT", "default_limit")
+    _apply_int(cfg, "CHATTWIN_SEARCH_CANDIDATES", "candidate_limit")
+    _apply_int(cfg, "CHATTWIN_RETRIEVAL_MAX_CHARS", "max_chars")
+    return cfg
+
+
+def qdrant_path() -> Path:
+    configured = retrieval_config().get("qdrant_path") or "data/qdrant"
+    path = Path(str(configured)).expanduser()
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
 
 
 def personality_config() -> dict:

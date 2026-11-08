@@ -1,10 +1,10 @@
 # ChatTwin / digital-life
 
-Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。Phase 4 从会话段和 L1 观察里抽出**长期记忆**：事实、事件、关系、看法、情境，连同证据、冲突和时间线。
+Phase 1 把本机的 **Moect 微信导出 JSON** 流式导入本地 **SQLite**。Phase 2 在这张表上做**会话切分**和 **L1 观察**。Phase 3 把这些观察跨段合并成 **L2 特质**，再写成 **L3 人格档案**。Phase 4 从会话段和 L1 观察里抽出**长期记忆**：事实、事件、关系、看法、情境，连同证据、冲突和时间线。Phase 5 用 **BGE-M3**（或可替换的嵌入客户端）、Qdrant 和 SQLite FTS5 做**混合检索**。
 
-这里没有 Qdrant、embedding、混合检索，也没有数字分身聊天 Agent。SQLite 里的 `memories_fts` 只是语句的词法索引，留给以后的检索用。
+这里没有数字分身聊天 Agent，也没有聊天界面。
 
-ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Phase 3 merges those observations into a personality profile. Phase 4 stores long-term memories with evidence and a timeline. Qdrant, embeddings, and a chat agent are later phases and are not in this tree.
+ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1 streams that JSON into SQLite. Phase 2 segments those messages and distills L1 observations. Phase 3 merges those observations into a personality profile. Phase 4 stores long-term memories with evidence and a timeline. Phase 5 searches segments, memories, and personality traits with embeddings and SQLite FTS5. A chat agent is a later phase and is not in this tree.
 
 ## 聊天记录只留在本机
 
@@ -14,7 +14,8 @@ ChatTwin is a local-first archive of a WeChat history exported by Moect. Phase 1
 - 这个目录里的 `*.json` 已被 `.gitignore` 忽略，**不要**把全量导出提交到 Git，也不要上传到网盘、工单或聊天工具。
 - 生成的 `*.db` 同样被忽略。SQLite 里是清洗后的原文，一样不能提交。
 - `personality/` 根目录下生成的档案（`*.md`、`*.json`）也被忽略。仓库里只保留 `personality/examples/` 的合成模板。
-- 导入 API 只应绑定在 `127.0.0.1`。它不是对外服务。
+- `data/qdrant/` 是向量索引，可以删掉再从 SQLite 重建。不要提交。
+- 导入和检索 API 只应绑定在 `127.0.0.1`。它不是对外服务。
 
 仓库里唯一的对话样本是开发用的前 300 条：`tests/fixtures/chattwin_moect_sample.json`。它不能代替你的全量文件。
 
@@ -304,7 +305,7 @@ python -m scripts.show_timeline --db data/database/cleaned_messages.db --status 
 python -m scripts.show_status --db data/database/cleaned_messages.db
 ```
 
-`memories_fts` 是 FTS5 外部内容表，由触发器跟着 `memories.statement` 更新。它只做词法匹配，不按语义排序，也不是混合检索。
+`memories_fts` 是 FTS5 外部内容表，由触发器跟着 `memories.statement` 更新。它只服务记忆表自己的词法查找。跨段、记忆和人格的混合检索在 Phase 5，用的是另一张 `retrieval_fts`。
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/api/v1/memory \
@@ -320,13 +321,78 @@ curl -s "http://127.0.0.1:8000/api/v1/memory/timeline?db=data/database/cleaned_m
 
 SQLite 新增：`entities`、`memories`、`memory_evidence`、`memory_entities`、`memory_relations`、`memory_tasks`、`memory_checkpoint`、`memories_fts`。
 
+## Phase 5：混合检索
+
+检索读三张已经落库的表，写成一张可重建的投影，再把稠密向量放进 Qdrant。SQLite 仍是原文和证据的来源。删掉 `data/qdrant/` 之后重跑索引命令就能把向量补回来。投影里没有 Moect 原始 JSON。
+
+| 集合 | SQLite 来源 | 索引进去的文本 |
+|---|---|---|
+| `conversation_segments` | `conversation_segments` 加上按位置排好的消息 | 角色、时间和正文。空段跳过 |
+| `long_term_memories` | `memories` | 类型、状态、陈述、情境、实体名 |
+| `personality_observations` | `l2_traits` | 维度、状态、特质陈述、情境范围 |
+
+`personality_observations` 是 L2 特质，不是 L1。证据 id 留在元数据里，可以回到观察或消息，但向量库的 payload 只放过滤字段，不放正文。
+
+默认嵌入模型是 **BGE-M3**，走和聊天模型一样的 OpenAI 兼容接口，路径是 `POST {base}/embeddings`。本机 Ollama 先拉模型再索引：
+
+```bash
+# 模型名换成你本机已经拉取的 BGE-M3。Ollama 上通常叫 bge-m3。
+ollama pull bge-m3
+export CHATTWIN_EMBEDDING_MODEL=bge-m3
+export CHATTWIN_EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+
+python -m scripts.build_embeddings \
+  --db data/database/cleaned_messages.db
+```
+
+`CHATTWIN_EMBEDDING_BASE_URL` 为空时，沿用 `CHATTWIN_LLM_BASE_URL`。密钥沿用 `CHATTWIN_LLM_API_KEY`，也可以单独设 `CHATTWIN_EMBEDDING_API_KEY`。不要把密钥写进仓库。
+
+SQLite 里记下的模型或维度变了，或者向量条数和嵌入记录对不上（比如删了 `data/qdrant/`），下一次索引会把向量补回去。文本没变、模型没变、向量也还在的行会跳过。`--rebuild` 则强制全部重嵌。上游切分如果 `--rebuild`，会清掉这张投影；记忆和特质写完之后要再跑一次索引。
+
+`--provider hash` 是测试和离线冒烟用的确定性向量，不是 BGE-M3。`--provider sentence_transformers` 只有本机装了 `sentence-transformers` 时才会加载 `BAAI/bge-m3`，仓库不依赖它，CI 也不需要 GPU。
+
+Qdrant 默认写在 `data/qdrant`（本地目录，不另起服务）。已经有服务时用 `--qdrant-url http://127.0.0.1:6333`。`--backend memory` 只活在当前进程里，命令退出就没了。
+
+查询把稠密检索和 `retrieval_fts`（FTS5 trigram，中英文至少 3 个字）用倒数排名融合到一起，按 `doc_id` 去重。一条文档如果两边都命中，只出现一次，并带上 `vector_rank` 和 `fts_rank`。可选的重排器默认关闭。设了 `CHATTWIN_RERANK_URL` 之后，CLI 加 `--rerank`，或 API 传 `"rerank": true`，才会把融合结果 POST 出去。响应要是 `{"results": [{"id", "score"}]}`。没配地址就不要打开这个开关。
+
+```bash
+python -m scripts.search \
+  --db data/database/cleaned_messages.db \
+  --query "搬到了上海"
+
+python -m scripts.search \
+  --db data/database/cleaned_messages.db \
+  --query "利弊" \
+  --collection personality_observations \
+  --no-vector
+```
+
+`--memory-status`、`--memory-type`、`--trait-status`、`--dimension` 只约束对应的那一类命中，其它集合仍会返回。时间未知的文档在带了时间范围时会被滤掉。
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/v1/embeddings \
+  -H 'content-type: application/json' \
+  -d '{"db_path":"data/database/cleaned_messages.db"}'
+
+curl -s http://127.0.0.1:8000/api/v1/embeddings/<job_id>
+curl -s "http://127.0.0.1:8000/api/v1/embeddings/status?db=data/database/cleaned_messages.db"
+
+curl -s -X POST http://127.0.0.1:8000/api/v1/search \
+  -H 'content-type: application/json' \
+  -d '{"db_path":"data/database/cleaned_messages.db","query":"搬到了上海","limit":10}'
+```
+
+索引任务的返回值是计数，不是正文。搜索接口会返回索引进去的文本、分数和证据 id，因为不返回这些就没法看结果。它仍然不是聊天 Agent。
+
+SQLite 新增：`retrieval_documents`、`retrieval_embeddings`、`retrieval_fts`。
+
 ## 路线图
 
 1. Phase 1 — 导入与标准化（已在本仓库）
 2. Phase 2 — 切分与 L1 观察（已在本仓库）
 3. Phase 3 — 人格蒸馏 L2/L3（已在本仓库）
-4. Phase 4 — 长期记忆（当前）
-5. 检索（含向量库）
+4. Phase 4 — 长期记忆（已在本仓库）
+5. Phase 5 — 混合检索（当前）
 6. 对话 Agent 与界面
 
 ## 开发
@@ -335,4 +401,4 @@ SQLite 新增：`entities`、`memories`、`memory_evidence`、`memory_entities`�
 pytest
 ```
 
-测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型。记忆测试用假的模型客户端，从合成段和一条合成 L1 观察写出记忆。
+测试使用 `tests/fixtures/chattwin_moect_sample.json`、合成消息和 `tests/fixtures/l1_personality_observations.json`。它们不读取你的全量导出，也不会连接真实模型或 GPU。记忆测试用假的模型客户端。检索测试用确定性的嵌入客户端和内存向量库；Qdrant 适配器用客户端自带的内存模式，不连外部服务。
