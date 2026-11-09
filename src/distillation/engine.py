@@ -90,37 +90,42 @@ def run_distillation(
                 timeout=settings["timeout_seconds"],
                 temperature=settings["temperature"],
             )
-        queue = _claimable(
-            conn,
-            params_hash=params_hash,
-            prompt_version=settings["prompt_version"],
-            model_version=settings["model_version"],
-            max_attempts=settings["max_attempts"],
-        )
-        if max_tasks is not None:
-            queue = queue[:max_tasks]
+        # Claim one task at a time under BEGIN IMMEDIATE so parallel workers
+        # do not process the same segment. Fresh RUNNING rows are left alone;
+        # only stale RUNNING (crash leftovers) are reclaimable.
         attempts_completed = 0
         attempts_failed = 0
-        for offset in range(0, len(queue), settings["batch_size"]):
-            batch = queue[offset : offset + settings["batch_size"]]
-            for item in batch:
-                outcome = _execute_task(
-                    conn,
-                    item["task_id"],
-                    client=client,
-                    max_attempts=settings["max_attempts"],
-                    max_chars=settings["max_chars_per_message"],
-                )
-                if outcome == COMPLETED:
-                    attempts_completed += 1
-                elif outcome == FAILED or outcome == RETRYING:
-                    attempts_failed += 1
-            log.info(
-                "distillation batch done size=%s completed=%s failed=%s",
-                len(batch),
-                attempts_completed,
-                attempts_failed,
+        seen = 0
+        while max_tasks is None or seen < max_tasks:
+            task_id = _claim_one(
+                conn,
+                params_hash=params_hash,
+                prompt_version=settings["prompt_version"],
+                model_version=settings["model_version"],
+                max_attempts=settings["max_attempts"],
             )
+            if task_id is None:
+                break
+            outcome = _execute_task(
+                conn,
+                task_id,
+                client=client,
+                max_attempts=settings["max_attempts"],
+                max_chars=settings["max_chars_per_message"],
+                already_claimed=True,
+            )
+            seen += 1
+            if outcome == COMPLETED:
+                attempts_completed += 1
+            elif outcome == FAILED or outcome == RETRYING:
+                attempts_failed += 1
+            if seen % settings["batch_size"] == 0:
+                log.info(
+                    "distillation batch done size=%s completed=%s failed=%s",
+                    settings["batch_size"],
+                    attempts_completed,
+                    attempts_failed,
+                )
         tasks = _status_counts(conn, settings["prompt_version"], settings["model_version"])
         remaining = _remaining(
             conn,
@@ -278,6 +283,18 @@ def _sync_tasks(
         )
 
 
+def _running_stale_before() -> str:
+    """RUNNING rows newer than this ISO timestamp are owned by a live worker."""
+    from datetime import datetime, timedelta, timezone
+
+    raw = os.environ.get("CHATTWIN_RUNNING_STALE_SECONDS", "120")
+    try:
+        seconds = max(0, int(raw))
+    except ValueError:
+        seconds = 120
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat()
+
+
 def _claimable(
     conn: sqlite3.Connection,
     *,
@@ -286,6 +303,7 @@ def _claimable(
     model_version: str,
     max_attempts: int,
 ) -> list[sqlite3.Row]:
+    stale_before = _running_stale_before()
     return conn.execute(
         """
         SELECT t.task_id
@@ -296,7 +314,7 @@ def _claimable(
           AND t.model_version = ?
           AND (
                 (t.status IN (?, ?) AND t.attempt_count < ?)
-                OR t.status = ?
+                OR (t.status = ? AND COALESCE(t.updated_at, '') < ?)
               )
         ORDER BY s.start_time IS NULL, s.start_time, s.segment_id
         """,
@@ -308,8 +326,77 @@ def _claimable(
             RETRYING,
             max_attempts,
             RUNNING,
+            stale_before,
         ),
     ).fetchall()
+
+
+def _claim_one(
+    conn: sqlite3.Connection,
+    *,
+    params_hash: str,
+    prompt_version: str,
+    model_version: str,
+    max_attempts: int,
+) -> str | None:
+    """Atomically claim the next task. Safe for a couple of parallel workers."""
+    stale_before = _running_stale_before()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            """
+            SELECT t.task_id, t.segment_id, t.status, t.attempt_count
+            FROM distillation_tasks t
+            JOIN conversation_segments s ON s.segment_id = t.segment_id
+            WHERE s.params_hash = ?
+              AND t.prompt_version = ?
+              AND t.model_version = ?
+              AND (
+                    (t.status IN (?, ?) AND t.attempt_count < ?)
+                    OR (t.status = ? AND COALESCE(t.updated_at, '') < ?)
+                  )
+            ORDER BY s.start_time IS NULL, s.start_time, s.segment_id
+            LIMIT 1
+            """,
+            (
+                params_hash,
+                prompt_version,
+                model_version,
+                PENDING,
+                RETRYING,
+                max_attempts,
+                RUNNING,
+                stale_before,
+            ),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        task_id = row["task_id"]
+        segment_id = row["segment_id"]
+        attempt = int(row["attempt_count"]) + 1
+        now = utc_now()
+        cur = conn.execute(
+            """
+            UPDATE distillation_tasks
+            SET status = ?, attempt_count = ?, started_at = COALESCE(started_at, ?),
+                updated_at = ?, error_message = NULL
+            WHERE task_id = ? AND status = ?
+            """,
+            (RUNNING, attempt, now, now, task_id, row["status"]),
+        )
+        if cur.rowcount != 1:
+            conn.commit()
+            return None
+        conn.execute(
+            "UPDATE conversation_segments SET processing_status = ?, updated_at = ? WHERE segment_id = ?",
+            (RUNNING, now, segment_id),
+        )
+        conn.commit()
+        return task_id
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def _remaining(conn: sqlite3.Connection, **kwargs) -> int:
@@ -323,27 +410,38 @@ def _execute_task(
     client: LLMClient,
     max_attempts: int,
     max_chars: int,
+    already_claimed: bool = False,
 ) -> str:
     row = conn.execute("SELECT * FROM distillation_tasks WHERE task_id = ?", (task_id,)).fetchone()
     if row is None or row["status"] in {COMPLETED, SKIPPED, FAILED}:
         return SKIPPED
     segment_id = row["segment_id"]
-    attempt = int(row["attempt_count"]) + 1
-    now = utc_now()
-    conn.execute(
-        """
-        UPDATE distillation_tasks
-        SET status = ?, attempt_count = ?, started_at = COALESCE(started_at, ?),
-            updated_at = ?, error_message = NULL
-        WHERE task_id = ?
-        """,
-        (RUNNING, attempt, now, now, task_id),
-    )
-    conn.execute(
-        "UPDATE conversation_segments SET processing_status = ?, updated_at = ? WHERE segment_id = ?",
-        (RUNNING, now, segment_id),
-    )
-    conn.commit()
+    if already_claimed:
+        # Claim path already moved PENDING/RETRYING/stale-RUNNING -> RUNNING
+        # and incremented attempt_count under BEGIN IMMEDIATE.
+        attempt = int(row["attempt_count"])
+        if row["status"] != RUNNING or attempt < 1:
+            return SKIPPED
+    else:
+        attempt = int(row["attempt_count"]) + 1
+        now = utc_now()
+        cur = conn.execute(
+            """
+            UPDATE distillation_tasks
+            SET status = ?, attempt_count = ?, started_at = COALESCE(started_at, ?),
+                updated_at = ?, error_message = NULL
+            WHERE task_id = ? AND status IN (?, ?, ?)
+            """,
+            (RUNNING, attempt, now, now, task_id, PENDING, RETRYING, RUNNING),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            return SKIPPED
+        conn.execute(
+            "UPDATE conversation_segments SET processing_status = ?, updated_at = ? WHERE segment_id = ?",
+            (RUNNING, now, segment_id),
+        )
+        conn.commit()
     try:
         segment = conn.execute(
             "SELECT * FROM conversation_segments WHERE segment_id = ?",

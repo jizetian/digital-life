@@ -206,32 +206,81 @@ def search_hits(db_path, query: str, *, limit: int, use_vector: bool, use_fts: b
     """Call Phase 5 search. Vectors use the whole question.
 
     Full text quotes the whole string, so a long question is not a phrase
-    inside a short memory. When that search is empty, try shorter slices of
-    the question with full text only. Those slices still go through
-    ``run_search``.
+    inside a short memory. When the primary hit list has no long-term
+    memories (even if segments matched), try shorter full-text slices over
+    memories and merge those hits in front so chat can cite them.
     """
     hits = _search_once(db_path, query, limit=limit, use_vector=use_vector, use_fts=use_fts)
-    if hits or not use_fts or len(query) < 4:
+    if not use_fts or len(query) < 4:
+        return hits
+    if _has_memory_hit(hits):
         return hits
     for piece in _fallback_slices(query):
-        found = _search_once(db_path, piece, limit=limit, use_vector=False, use_fts=True)
-        if found:
-            log.info("chat retrieval used a shorter full-text slice chars=%s hits=%s", len(piece), len(found))
-            return found
-    return []
+        memory_hits = _search_once(
+            db_path,
+            piece,
+            limit=limit,
+            use_vector=False,
+            use_fts=True,
+            collections=("long_term_memories",),
+        )
+        if memory_hits:
+            log.info(
+                "chat retrieval merged memory slice chars=%s memory_hits=%s primary_hits=%s",
+                len(piece),
+                len(memory_hits),
+                len(hits),
+            )
+            return _merge_memory_first(memory_hits, hits, limit)
+        if not hits:
+            found = _search_once(db_path, piece, limit=limit, use_vector=False, use_fts=True)
+            if found:
+                log.info("chat retrieval used a shorter full-text slice chars=%s hits=%s", len(piece), len(found))
+                return found
+    return hits
 
 
-def _search_once(db_path, query: str, *, limit: int, use_vector: bool, use_fts: bool) -> list[dict]:
+def _has_memory_hit(hits: list[dict]) -> bool:
+    return any(str(hit.get("collection") or "") == "long_term_memories" for hit in hits or [])
+
+
+def _merge_memory_first(memory_hits: list[dict], other_hits: list[dict], limit: int) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for hit in list(memory_hits) + list(other_hits or []):
+        key = str(hit.get("doc_id") or "") or f"{hit.get('collection')}:{hit.get('source_id')}"
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(hit)
+        if len(merged) >= limit:
+            break
+    return merged
+
+
+def _search_once(
+    db_path,
+    query: str,
+    *,
+    limit: int,
+    use_vector: bool,
+    use_fts: bool,
+    collections: tuple[str, ...] | None = None,
+) -> list[dict]:
     from retrieval.errors import RetrievalError
     from retrieval.service import run_search
 
+    kwargs: dict = {"limit": limit, "use_vector": use_vector, "use_fts": use_fts}
+    if collections is not None:
+        kwargs["collections"] = list(collections)
     try:
-        result = run_search(db_path, query, limit=limit, use_vector=use_vector, use_fts=use_fts)
+        result = run_search(db_path, query, **kwargs)
     except RetrievalError:
         if not (use_vector and use_fts):
             raise
         log.warning("vector search failed; retrying with full text only")
-        result = run_search(db_path, query, limit=limit, use_vector=False, use_fts=True)
+        kwargs["use_vector"] = False
+        result = run_search(db_path, query, **kwargs)
     return list(result.get("hits") or [])
 
 
